@@ -151,8 +151,10 @@ func TestVerifyBranchRefinement(t *testing.T) {
 		"    JLT r3, 0, out\n" +
 		"    JGE r3, 8, out\n" +
 		"    STORE [r2 + r3*8], r3\n" +
+		"    ARENA_DESTROY r1\n" +
 		"    RET\n" +
 		"out:\n" +
+		"    ARENA_DESTROY r1\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, safe)); err != nil {
 		t.Fatalf("expected the refined branches to verify, got %v", err)
@@ -220,6 +222,7 @@ func TestVerifyPointerParam(t *testing.T) {
 		"    r2 = ARENA_ALLOC r5, 64\n" +
 		"    r1 = r2\n" +
 		"    CALL read\n" +
+		"    ARENA_DESTROY r5\n" +
 		"    RET r0\n" +
 		"func read(r1: ptr(64)):\n" +
 		"    r0 = LOAD [r1]\n" +
@@ -273,6 +276,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 				"    r2 = ARENA_ALLOC r5, 64\n" +
 				"    r1 = r2\n" +
 				"    CALL f\n" +
+				"    ARENA_DESTROY r5\n" +
 				"    RET r0\n" +
 				"func f(r1: ptr(16)):\n" +
 				"    r0 = LOAD [r1 + 32]\n" +
@@ -330,21 +334,77 @@ func TestVerifyReturnRejections(t *testing.T) {
 		},
 		{
 			"returned allocation too small",
-			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
+			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    ARENA_DESTROY r5\n    r1 = 0\n    RET r1\n" +
 				"func f(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 16\n    RET r0\n",
 			"16-byte allocation",
 		},
 		{
 			"bare RET for non-scalar",
-			"func main:\n    CALL f\n    r1 = 0\n    RET r1\n" +
+			"func main:\n    CALL f\n    ARENA_DESTROY r0\n    r1 = 0\n    RET r1\n" +
 				"func f() -> arena:\n    RET\n",
 			"RET has no value",
 		},
 		{
 			"return into destroyed arena",
 			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
-				"func f(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
-			"destroyed arena",
+				"func f(r1: own arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
+			"no longer live",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyOwnership(t *testing.T) {
+	// Transferring ownership and destroying inside the callee is allowed.
+	valid := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    CALL consume\n" +
+		"    RET\n" +
+		"func consume(r1: own arena):\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected own transfer to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"leak",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    RET\n",
+			"never released",
+		},
+		{
+			"destroy borrowed arena",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    CALL consume\n    ARENA_DESTROY r1\n    RET\n" +
+				"func consume(r1: arena):\n    ARENA_DESTROY r1\n    RET\n",
+			"borrowed arena",
+		},
+		{
+			"use after ownership transfer",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 64\n    r3 = 7\n    CALL consume\n    STORE [r2], r3\n    RET\n" +
+				"func consume(r1: own arena):\n    ARENA_DESTROY r1\n    RET\n",
+			"use-after-destroy",
+		},
+		{
+			"cannot transfer borrowed arena",
+			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL give\n    ARENA_DESTROY r5\n    RET\n" +
+				"func give(r1: arena):\n    CALL take\n    RET\n" +
+				"func take(r1: own arena):\n    ARENA_DESTROY r1\n    RET\n",
+			"cannot transfer a borrowed arena",
 		},
 	}
 	for _, tc := range cases {

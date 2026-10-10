@@ -173,7 +173,8 @@ The calling convention is:
 
 Parameters are declared with a type: `scalar`, `arena` and `ptr`. A `ptr`
 parameter carries the size of the allocation it refers to, written
-`ptr(<size>)`:
+`ptr(<size>)`. An `arena` parameter is **borrowed** unless prefixed with `own`,
+which transfers ownership to the callee (see §7):
 
 ```
 func read(r1: ptr(64)):
@@ -206,7 +207,37 @@ that the allocation is large enough and still live), and gives the caller's
 A program with no `func` declaration is treated as a single entry function
 named `main`.
 
-## 7. Program structure
+## 7. Ownership and lifetime
+
+Arenas are **linear resources**. `ARENA_CREATE` produces an owned reference,
+and every owned reference must be released exactly once on every control-flow
+path before the function returns — otherwise the verifier reports a leak.
+
+- `ARENA_DESTROY r` releases the arena in `r`. `r` must be an owned arena;
+  destroying a borrowed arena is rejected.
+- Releasing an arena invalidates every handle and data pointer to it. Data
+  pointers whose arena provenance is unknown (e.g. returned from a call) are
+  conservatively treated as aliasing any arena and are invalidated too.
+- An `arena` parameter is borrowed: the callee may allocate from it but must
+  not destroy it. An `own arena` parameter transfers ownership to the callee,
+  which must then release or return it.
+- Returning an `arena` transfers ownership to the caller.
+
+```
+func main:
+    r1 = ARENA_CREATE DRAM_LOCAL, 64   ; owned here
+    CALL consume                        ; ownership moves to consume
+    RET
+
+func consume(r1: own arena):
+    ARENA_DESTROY r1                    ; released here
+    RET
+```
+
+This is what makes use-after-free across calls detectable: after a call that
+consumes an arena, every handle and pointer to it becomes dead.
+
+## 8. Program structure
 
 ```
 program    := { function }

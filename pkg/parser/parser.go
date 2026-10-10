@@ -223,6 +223,11 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			if err := c.expect(":"); err != nil {
 				return ir.Instruction{}, err
 			}
+			own := false
+			if c.peek() == "own" {
+				own = true
+				c.pos++
+			}
 			kindTok, err := c.next()
 			if err != nil {
 				return ir.Instruction{}, err
@@ -231,7 +236,10 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			if !ok {
 				return ir.Instruction{}, fmt.Errorf("line %d: unknown parameter type %q", lineNo, kindTok)
 			}
-			param := ir.Param{Reg: reg, Kind: kind}
+			if own && kind != ir.KindArena {
+				return ir.Instruction{}, fmt.Errorf("line %d: 'own' is only valid for arena parameters", lineNo)
+			}
+			param := ir.Param{Reg: reg, Kind: kind, Own: own}
 			if c.peek() == "(" {
 				c.pos++
 				size, err := parseImm(c, lineNo)

@@ -78,11 +78,13 @@ func ParseValKind(s string) (ValKind, bool) {
 
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
-// to, which the callee's bounds checks rely on.
+// to, which the callee's bounds checks rely on. Own marks an arena parameter
+// whose ownership is transferred to the callee; otherwise it is borrowed.
 type Param struct {
 	Reg  Register
 	Kind ValKind
 	Size int64
+	Own  bool
 }
 
 // OpCode enumerates the ARC instruction set.
@@ -317,7 +319,11 @@ type Program struct {
 func formatParams(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
-		parts[i] = fmt.Sprintf("%s: %s", p.Reg, formatType(p.Kind, p.Size))
+		prefix := ""
+		if p.Own {
+			prefix = "own "
+		}
+		parts[i] = fmt.Sprintf("%s: %s%s", p.Reg, prefix, formatType(p.Kind, p.Size))
 	}
 	return strings.Join(parts, ", ")
 }

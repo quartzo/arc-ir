@@ -36,6 +36,7 @@ verification and code generation stay simple and direct.
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(size)`) with interprocedural size checks | ✅ |
 | — | Non-scalar returns: `-> arena`, `-> ptr(size)` | ✅ |
+| — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
 
 ## Layout
 
@@ -151,6 +152,40 @@ recurse.
 A function may also declare a return type with `->` (`arena` or `ptr(size)`;
 the default is `scalar`). The verifier checks the value returned at each `RET`
 against that type and gives the caller's `r0` the declared type.
+
+## Ownership
+
+Arenas are **linear resources**: `ARENA_CREATE` produces an owned reference,
+and every owned reference must be released exactly once on every path before
+the function returns. The verifier rejects leaks, destroying a borrowed arena,
+and any use of a handle or pointer after its arena has been released.
+
+- An `arena` parameter is **borrowed** by default; the callee may allocate from
+  it but not destroy it.
+- An `own arena` parameter **transfers ownership** to the callee, which must
+  then release or return it. After such a call, the caller's handle and any
+  pointers into that arena are dead.
+- Returning an `arena` transfers ownership to the caller.
+- Data pointers of unknown provenance (returned from a call) are conservatively
+  treated as aliasing any arena.
+
+`examples/own.arc`:
+
+```arc
+func main:
+    r1 = ARENA_CREATE DRAM_LOCAL, 64
+    r2 = ARENA_ALLOC r1, 64
+    ...
+    CALL consume
+    RET r4
+
+func consume(r1: own arena):
+    ARENA_DESTROY r1
+    RET
+```
+
+This is what makes use-after-free across calls detectable — the case that plain
+modular type checking missed.
 
 ## The Verifier
 
@@ -273,6 +308,7 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Interprocedural verification with a bounded call graph (recursion depth).
+- Ban recursion / bound the call graph (eBPF-style acyclic calls).
+- Typed memory for bounded regions (so pointers survive a store/load round-trip).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.

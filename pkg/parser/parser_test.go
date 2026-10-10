@@ -149,6 +149,21 @@ func TestParseReturnType(t *testing.T) {
 	}
 }
 
+func TestParseOwnParam(t *testing.T) {
+	prog, err := Parse("func f(r1: own arena, r2: arena):\n    RET\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	p0 := prog.Instrs[0].Params[0]
+	if p0.Kind != ir.KindArena || !p0.Own {
+		t.Errorf("own param parsed as %+v", p0)
+	}
+	p1 := prog.Instrs[0].Params[1]
+	if p1.Kind != ir.KindArena || p1.Own {
+		t.Errorf("borrow param parsed as %+v", p1)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -163,6 +178,7 @@ func TestParseErrors(t *testing.T) {
 		{"ptr without size", "func f(r1: ptr):\n    RET\n", "requires a size"},
 		{"ptr return without size", "func f() -> ptr:\n    RET\n", "requires a size"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
+		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
