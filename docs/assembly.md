@@ -310,3 +310,23 @@ block      := { instruction }
 **(draft)** The grammar above is being formalized. Until the first `func`
 appears, a program may also be written without any function declaration, in
 which case the whole program is the entry function `main`.
+
+## 9. Structs
+
+A struct is a named layout. Every field is one 8-byte word, at consecutive
+offsets:
+
+```
+struct Node { next: ptr(8), val: scalar }
+```
+
+- `ARENA_ALLOC r, Node` allocates `sizeof(Node)` and gives `r` the struct type.
+- `r.field` reads a field; `r.field = rsrc` writes one. Field access is
+  resolved by the verifier to a plain load/store at the field's offset.
+- Field types are a **contract**: writing a value of the wrong kind (or, for a
+  `ptr` field, a smaller allocation) is rejected, and reading a field before it
+  is written is rejected (definite initialization).
+
+Structs are compile-time only: at runtime they are just offsets into an
+allocation. The layout currently does not travel across function boundaries;
+`ptr(size)` parameters remain raw pointers.

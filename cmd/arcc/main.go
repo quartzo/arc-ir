@@ -112,11 +112,11 @@ func cmdEmitAsm(args []string) error {
 	if len(pos) != 1 {
 		return fmt.Errorf("usage: arcc emit-asm <file.arc> [-o out.s]")
 	}
-	prog, _, err := frontEnd(pos[0])
+	_, res, err := frontEnd(pos[0])
 	if err != nil {
 		return err
 	}
-	asm, err := codegen.EmitAsm(prog)
+	asm, err := codegen.EmitAsm(res.Module)
 	if err != nil {
 		return err
 	}
@@ -140,11 +140,11 @@ func cmdBuild(args []string) error {
 	}
 	input := pos[0]
 
-	prog, _, err := frontEnd(input)
+	_, res, err := frontEnd(input)
 	if err != nil {
 		return err
 	}
-	asm, err := codegen.EmitAsm(prog)
+	asm, err := codegen.EmitAsm(res.Module)
 	if err != nil {
 		return err
 	}

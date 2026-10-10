@@ -87,14 +87,17 @@ func (t RegType) String() string {
 type RegState struct {
 	Defined   bool
 	Type      RegType
-	Min, Max  int64 // scalar range
-	RefID     int   // arena identity for arena handles and data pointers (-1 = none)
-	AllocID   int   // allocation identity for data pointers (-1 = unknown)
-	Owned     bool  // this function holds the reference and must release it
-	Foreign   bool  // data pointer whose arena provenance is unknown (from a call)
-	Growable  bool  // arena handle: extensible (AllocSize is the chunk size)
-	AllocSize int64 // reachable bytes (arena capacity/chunk, or allocation size)
-	Destroyed bool  // owning arena destroyed / reference released
+	Min, Max  int64  // scalar range
+	RefID     int    // arena identity for arena handles and data pointers (-1 = none)
+	AllocID   int    // allocation identity for data pointers (-1 = unknown)
+	Owned     bool   // this function holds the reference and must release it
+	Foreign   bool   // data pointer whose arena provenance is unknown (from a call)
+	Growable  bool   // arena handle: extensible (AllocSize is the chunk size)
+	Struct    string // data pointer: struct type name, if any
+	AllocSize int64  // reachable bytes (arena capacity/chunk, or allocation size)
+	Init      bool   // memory cell: has been written
+	Declared  bool   // memory cell: seeded from a struct field (type is a contract)
+	Destroyed bool   // owning arena destroyed / reference released
 }
 
 // MemKey identifies a memory cell: an allocation and a byte offset.
@@ -155,8 +158,9 @@ func (s *State) setUsed(ref int, n int64) {
 
 // Result is the outcome of a successful verification.
 type Result struct {
-	Blocks int // total basic blocks verified
-	Funcs  int // number of functions verified
+	Blocks int        // total basic blocks verified
+	Funcs  int        // number of functions verified
+	Module *ir.Module // the verified module, with field accesses lowered
 }
 
 // Error is a verifier diagnostic tied to a source line.
@@ -179,7 +183,7 @@ func Verify(prog *ir.Program) (*Result, error) {
 		return nil, err
 	}
 
-	res := &Result{Funcs: len(m.Funcs)}
+	res := &Result{Funcs: len(m.Funcs), Module: m}
 	for _, f := range m.Funcs {
 		v := &Verifier{mod: m, f: f, in: make([]*State, len(f.Blocks))}
 		v.assignIDs()
@@ -304,7 +308,14 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			*st = refine(*st, inst, false)
 
 		default:
-			if err := v.apply(inst, st, v.refOf[[2]int{bi, ii}], v.allocOf[[2]int{bi, ii}]); err != nil {
+			resolved, err := v.resolve(inst, st)
+			if err != nil {
+				return nil, err
+			}
+			if resolved.Op != inst.Op {
+				b.Instrs[ii] = resolved
+			}
+			if err := v.apply(resolved, st, v.refOf[[2]int{bi, ii}], v.allocOf[[2]int{bi, ii}]); err != nil {
 				return nil, err
 			}
 		}
@@ -323,6 +334,41 @@ func mergeEdge(m map[int]State, target int, st State) {
 	} else {
 		m[target] = st.clone()
 	}
+}
+
+// resolve lowers a field access to a concrete load/store at a static offset.
+// The rewritten instruction is written back into the verified module, so the
+// code generator sees only plain LOAD/STORE.
+func (v *Verifier) resolve(inst ir.Instruction, st *State) (ir.Instruction, error) {
+	if inst.Op != ir.OpField && inst.Op != ir.OpFieldStore {
+		return inst, nil
+	}
+	base, err := v.defined(st, inst.Src[0], inst)
+	if err != nil {
+		return inst, err
+	}
+	if base.Type != TypeDataPtr || base.Struct == "" {
+		return inst, v.errf(inst, "field access needs a struct pointer in %s", inst.Src[0])
+	}
+	sf := v.mod.Structs[base.Struct]
+	if sf == nil {
+		return inst, v.errf(inst, "unknown struct %s", base.Struct)
+	}
+	off, _ := sf.Offset(inst.Field)
+	if off < 0 {
+		return inst, v.errf(inst, "struct %s has no field %q", base.Struct, inst.Field)
+	}
+	out := ir.Instruction{Line: inst.Line}
+	out.Src = [2]ir.Register{ir.NoReg, ir.NoReg}
+	out.Mem = ir.Mem{Base: inst.Src[0], Index: ir.NoReg, Offset: off}
+	if inst.Op == ir.OpField {
+		out.Op = ir.OpLoad
+		out.Dst = inst.Dst
+	} else {
+		out.Op = ir.OpStore
+		out.Src[0] = inst.Src[1]
+	}
+	return out, nil
 }
 
 // apply updates the state for a non-terminator instruction. ref and alloc are
@@ -379,7 +425,24 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			Type:      TypeDataPtr,
 			RefID:     arena.RefID,
 			AllocID:   alloc,
+			Struct:    inst.Struct,
 			AllocSize: inst.Size,
+		}
+		if inst.Struct != "" {
+			sf := v.mod.Structs[inst.Struct]
+			if sf == nil {
+				return v.errf(inst, "unknown struct %s", inst.Struct)
+			}
+			for i := range sf.Fields {
+				f := &sf.Fields[i]
+				st.setCell(alloc, int64(i)*8, RegState{
+					Type:      fieldRegType(f.Type),
+					RefID:     arena.RefID,
+					AllocID:   alloc,
+					AllocSize: f.Size,
+					Declared:  true,
+				})
+			}
 		}
 		return nil
 
@@ -412,15 +475,11 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			st.Regs[inst.Dst] = unknownScalar()
 			return nil
 		}
-		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && cell.Type == TypeDataPtr {
-			st.Regs[inst.Dst] = RegState{
-				Defined:   true,
-				Type:      TypeDataPtr,
-				RefID:     cell.RefID,
-				AllocID:   cell.AllocID,
-				AllocSize: cell.AllocSize,
-				Destroyed: cell.Destroyed,
+		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok {
+			if cell.Declared && !cell.Init {
+				return v.errf(inst, "field at offset %d is not initialized", inst.Mem.Offset)
 			}
+			st.Regs[inst.Dst] = loadFromCell(cell)
 			return nil
 		}
 		st.Regs[inst.Dst] = unknownScalar()
@@ -445,15 +504,31 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			}
 			return nil
 		}
+		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && cell.Declared {
+			if err := v.fieldCompatible(cell, src, inst); err != nil {
+				return err
+			}
+			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
+				Type:      cell.Type,
+				RefID:     src.RefID,
+				AllocID:   src.AllocID,
+				AllocSize: cell.AllocSize,
+				Declared:  true,
+				Init:      true,
+				Destroyed: src.Destroyed,
+			})
+			return nil
+		}
 		switch src.Type {
 		case TypeScalar:
-			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{Type: TypeScalar, RefID: -1, AllocID: -1})
+			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{Type: TypeScalar, RefID: -1, AllocID: -1, Init: true})
 		case TypeDataPtr:
 			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
 				Type:      TypeDataPtr,
 				RefID:     src.RefID,
 				AllocID:   src.AllocID,
 				AllocSize: src.AllocSize,
+				Init:      true,
 				Destroyed: src.Destroyed,
 			})
 		default:
@@ -775,6 +850,43 @@ func (v *Verifier) vecOf(st *State, r ir.Register, want RegType, inst ir.Instruc
 		return nil, v.errf(inst, "expected %s in %s, got %s", want, r, rs.Type)
 	}
 	return rs, nil
+}
+
+func fieldRegType(k ir.ValKind) RegType {
+	switch k {
+	case ir.KindArena:
+		return TypeArena
+	case ir.KindPtr:
+		return TypeDataPtr
+	default:
+		return TypeScalar
+	}
+}
+
+func loadFromCell(cell RegState) RegState {
+	out := RegState{
+		Defined:   true,
+		Type:      cell.Type,
+		RefID:     cell.RefID,
+		AllocID:   cell.AllocID,
+		AllocSize: cell.AllocSize,
+		Struct:    cell.Struct,
+		Destroyed: cell.Destroyed,
+	}
+	if cell.Type == TypeScalar {
+		out.Min, out.Max = math.MinInt64, math.MaxInt64
+	}
+	return out
+}
+
+func (v *Verifier) fieldCompatible(cell RegState, src *RegState, inst ir.Instruction) error {
+	if cell.Type != src.Type {
+		return v.errf(inst, "field expects %s, got %s", cell.Type, src.Type)
+	}
+	if cell.Type == TypeDataPtr && src.AllocSize < cell.AllocSize {
+		return v.errf(inst, "field expects ptr(%d), got a %d-byte allocation", cell.AllocSize, src.AllocSize)
+	}
+	return nil
 }
 
 func (v *Verifier) floatBin(st *State, inst ir.Instruction, ft RegType) error {

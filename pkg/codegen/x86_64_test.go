@@ -19,10 +19,11 @@ func buildAsm(t *testing.T, src string) string {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if _, err := verifier.Verify(prog); err != nil {
+	res, err := verifier.Verify(prog)
+	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	asm, err := EmitAsm(prog)
+	asm, err := EmitAsm(res.Module)
 	if err != nil {
 		t.Fatalf("emit: %v", err)
 	}
@@ -137,6 +138,13 @@ func TestCompileAndRun(t *testing.T) {
 		{"simd64", "func main:\n" +
 			"    v1 = f64x2(1.5, 2.5)\n    v2 = f64x2(10.0, 20.0)\n    v3 = VADD.f64x2 v1, v2\n    PRINTV.f64x2 v3\n" +
 			"    v4 = i64x2(100, 200)\n    v5 = i64x2(1, 2)\n    v6 = VADD.i64x2 v4, v5\n    PRINTV.i64x2 v6\n    RET\n", "11.5\n22.5\n101\n202"},
+		{"struct", "struct Node { next: ptr(8), val: scalar }\n" +
+			"func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, Node\n" +
+			"    r3 = ARENA_ALLOC r1, 8\n    r4 = 42\n    STORE [r3], r4\n" +
+			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r6 = r2.next\n" +
+			"    r7 = LOAD [r6]\n    PRINT r7\n    r8 = r2.val\n    PRINT r8\n" +
+			"    ARENA_DESTROY r1\n    RET r7\n", "42\n7"},
 	}
 
 	for _, tc := range cases {

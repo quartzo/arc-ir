@@ -697,6 +697,49 @@ func TestVerifySIMD(t *testing.T) {
 	}
 }
 
+func TestVerifyStruct(t *testing.T) {
+	valid := "struct Node { next: ptr(8), val: scalar }\n" +
+		"func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r2 = ARENA_ALLOC r1, Node\n" +
+		"    r3 = ARENA_ALLOC r1, 8\n" +
+		"    r4 = 42\n" +
+		"    STORE [r3], r4\n" +
+		"    r2.next = r3\n" +
+		"    r5 = 7\n" +
+		"    r2.val = r5\n" +
+		"    r6 = r2.next\n" +
+		"    r7 = LOAD [r6]\n" +
+		"    PRINT r7\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET r7\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected struct program to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"uninitialized field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
+		{"wrong field type", "struct N { p: ptr(8) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
+		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 8\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
+		{"unknown field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

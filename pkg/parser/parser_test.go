@@ -263,6 +263,38 @@ func TestParseSIMD64(t *testing.T) {
 	}
 }
 
+func TestParseStruct(t *testing.T) {
+	src := "struct Node { next: ptr(8), val: scalar }\n" +
+		"func main:\n" +
+		"    r2 = ARENA_ALLOC r1, Node\n" +
+		"    r3 = r2.next\n" +
+		"    r2.val = r3\n" +
+		"    RET\n"
+	prog, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	sf := prog.Structs["Node"]
+	if sf == nil || len(sf.Fields) != 2 {
+		t.Fatalf("struct parsed as %+v", sf)
+	}
+	if sf.Fields[0].Name != "next" || sf.Fields[0].Type != ir.KindPtr || sf.Fields[0].Size != 8 {
+		t.Errorf("field 0 = %+v", sf.Fields[0])
+	}
+	if sf.Size() != 16 {
+		t.Errorf("sizeof = %d, want 16", sf.Size())
+	}
+	if in := prog.Instrs[1]; in.Op != ir.OpArenaAlloc || in.Struct != "Node" || in.Size != 16 {
+		t.Errorf("alloc parsed as %+v", in)
+	}
+	if in := prog.Instrs[2]; in.Op != ir.OpField || in.Field != "next" || in.Src[0] != 2 {
+		t.Errorf("field load parsed as %+v", in)
+	}
+	if in := prog.Instrs[3]; in.Op != ir.OpFieldStore || in.Field != "val" || in.Src[0] != 2 || in.Src[1] != 3 {
+		t.Errorf("field store parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

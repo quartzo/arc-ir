@@ -66,13 +66,10 @@ type x64 struct {
 	b strings.Builder
 }
 
-// EmitAsm translates a program to x86_64 GNU assembly. The program must have
-// been verified first.
-func EmitAsm(prog *ir.Program) (string, error) {
-	m, err := ir.BuildModule(prog)
-	if err != nil {
-		return "", err
-	}
+// EmitAsm translates a verified module to x86_64 GNU assembly. The module must
+// come from the verifier, which has lowered field accesses to plain loads and
+// stores.
+func EmitAsm(m *ir.Module) (string, error) {
 	x := &x64{mod: m, physOf: map[ir.Register]string{}, symbol: map[string]string{}}
 	x.assignGlobals()
 	return x.emit()

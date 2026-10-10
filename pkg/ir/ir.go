@@ -160,6 +160,8 @@ const (
 	OpArenaDestroy // ARENA_DESTROY rsrc
 	OpLoad         // rdst = LOAD [mem]
 	OpStore        // STORE [mem], rsrc
+	OpField        // rdst = rbase.field      (resolved by the verifier to LOAD)
+	OpFieldStore   // rbase.field = rsrc      (resolved by the verifier to STORE)
 	OpAdd          // rdst = ADD ra, (rb | imm)
 	OpSub          // rdst = SUB ra, (rb | imm)
 	OpMul          // rdst = MUL ra, (rb | imm)
@@ -207,6 +209,8 @@ var opNames = map[OpCode]string{
 	OpArenaDestroy: "ARENA_DESTROY",
 	OpLoad:         "LOAD",
 	OpStore:        "STORE",
+	OpField:        "FIELD",
+	OpFieldStore:   "FIELDSTORE",
 	OpAdd:          "ADD",
 	OpSub:          "SUB",
 	OpMul:          "MUL",
@@ -281,7 +285,7 @@ func (o OpCode) IsTerminator() bool {
 // HasDest reports whether the opcode writes Dst.
 func (o OpCode) HasDest() bool {
 	switch o {
-	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpAdd, OpSub, OpMul,
+	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpField, OpAdd, OpSub, OpMul,
 		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv,
 		OpF32Add, OpF32Sub, OpF32Mul, OpF32Div,
 		OpIToF, OpIToF32, OpFToI, OpF32ToI,
@@ -344,7 +348,9 @@ type Instruction struct {
 	Label    string
 	Tier     TopologyTier
 	Size     int64
-	Growable bool // OpArenaCreate: extensible arena; Size is the chunk size
+	Growable bool   // OpArenaCreate: extensible arena; Size is the chunk size
+	Struct   string // OpArenaAlloc: struct type name
+	Field    string // OpField / OpFieldStore: field name
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
@@ -443,7 +449,34 @@ func (i Instruction) String() string {
 
 // Program is a parsed ARC program: a flat instruction stream with labels.
 type Program struct {
-	Instrs []Instruction
+	Instrs  []Instruction
+	Structs map[string]*Struct
+}
+
+// Field is one member of a struct. Every field is one 8-byte word.
+type Field struct {
+	Name string
+	Type ValKind
+	Size int64 // for ptr fields
+}
+
+// Struct is a named layout: fields at consecutive 8-byte offsets.
+type Struct struct {
+	Name   string
+	Fields []Field
+}
+
+// Size returns the struct size in bytes.
+func (s *Struct) Size() int64 { return int64(len(s.Fields)) * 8 }
+
+// Offset returns the byte offset of a named field, or -1 if absent.
+func (s *Struct) Offset(name string) (int64, *Field) {
+	for i := range s.Fields {
+		if s.Fields[i].Name == name {
+			return int64(i) * 8, &s.Fields[i]
+		}
+	}
+	return -1, nil
 }
 
 func formatParams(params []Param) string {

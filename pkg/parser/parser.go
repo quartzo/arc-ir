@@ -30,7 +30,7 @@ import (
 
 // Parse reads a complete ARC program.
 func Parse(src string) (*ir.Program, error) {
-	prog := &ir.Program{}
+	prog := &ir.Program{Structs: map[string]*ir.Struct{}}
 	for i, raw := range strings.Split(src, "\n") {
 		lineNo := i + 1
 		line := stripComment(raw)
@@ -41,13 +41,109 @@ func Parse(src string) (*ir.Program, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
+		if toks[0] == "struct" {
+			if err := parseStruct(prog, toks, lineNo); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		inst, err := parseLine(toks, lineNo)
 		if err != nil {
 			return nil, err
 		}
 		prog.Instrs = append(prog.Instrs, inst)
 	}
+
+	// Resolve struct-typed allocations to a byte size.
+	for i := range prog.Instrs {
+		in := &prog.Instrs[i]
+		if in.Op == ir.OpArenaAlloc && in.Struct != "" {
+			st, ok := prog.Structs[in.Struct]
+			if !ok {
+				return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, in.Struct)
+			}
+			in.Size = st.Size()
+		}
+	}
 	return prog, nil
+}
+
+// parseStruct parses "struct Name { field: type, ... }".
+func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
+	c := &cursor{toks: toks, line: lineNo}
+	c.pos = 1 // skip "struct"
+	name, err := c.next()
+	if err != nil {
+		return err
+	}
+	if !isIdent(name) {
+		return fmt.Errorf("line %d: expected struct name, got %q", lineNo, name)
+	}
+	if err := c.expect("{"); err != nil {
+		return err
+	}
+	st := &ir.Struct{Name: name}
+	for c.peek() != "}" {
+		fname, err := c.next()
+		if err != nil {
+			return err
+		}
+		if !isIdent(fname) {
+			return fmt.Errorf("line %d: expected field name, got %q", lineNo, fname)
+		}
+		if err := c.expect(":"); err != nil {
+			return err
+		}
+		kindTok, err := c.next()
+		if err != nil {
+			return err
+		}
+		kind, ok := ir.ParseValKind(kindTok)
+		if !ok {
+			return fmt.Errorf("line %d: unknown field type %q", lineNo, kindTok)
+		}
+		f := ir.Field{Name: fname, Type: kind}
+		if c.peek() == "(" {
+			c.pos++
+			sz, err := parseImm(c, lineNo)
+			if err != nil {
+				return err
+			}
+			if err := c.expect(")"); err != nil {
+				return err
+			}
+			f.Size = sz
+		}
+		if kind == ir.KindPtr && f.Size <= 0 {
+			return fmt.Errorf("line %d: ptr field %s requires a size, e.g. ptr(8)", lineNo, fname)
+		}
+		st.Fields = append(st.Fields, f)
+		if c.peek() == "," {
+			c.pos++
+			continue
+		}
+		break
+	}
+	if err := c.expect("}"); err != nil {
+		return err
+	}
+	if err := noTrailing(c); err != nil {
+		return err
+	}
+	if _, dup := prog.Structs[name]; dup {
+		return fmt.Errorf("line %d: duplicate struct %q", lineNo, name)
+	}
+	prog.Structs[name] = st
+	return nil
+}
+
+// splitField splits "rbase.field" into its register and field name.
+func splitField(tok string) (string, string, bool) {
+	b, f, ok := strings.Cut(tok, ".")
+	if !ok || !isRegister(b) || f == "" {
+		return "", "", false
+	}
+	return b, f, true
 }
 
 func stripComment(line string) string {
@@ -171,6 +267,26 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	// Not a mnemonic: this is a MOV written as "rdst = <reg|imm>".
 	op, isOp := ir.OpFromName(strings.ToUpper(base))
 	if !isOp {
+		// Field store: "rbase.field = rvalue".
+		if b, f, ok := splitField(mnem); ok && c.peekAt(1) == "=" {
+			base, err := parseRegister(b, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			c.pos += 2 // consume "rbase.field" and "="
+			val, err := c.reg(lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			inst := ir.Instruction{Op: ir.OpFieldStore, Field: f, Line: lineNo}
+			inst.Src = [2]ir.Register{base, val}
+			inst.Mem.Base = ir.NoReg
+			inst.Mem.Index = ir.NoReg
+			if err := noTrailing(c); err != nil {
+				return ir.Instruction{}, err
+			}
+			return inst, nil
+		}
 		if !dst.Valid() {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown instruction %q", lineNo, mnem)
 		}
@@ -184,6 +300,15 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 				return ir.Instruction{}, err
 			}
 			inst.Src[0] = r
+		} else if b, f, ok := splitField(mnem); ok {
+			base, err := parseRegister(b, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			c.pos++ // consume the "rbase.field" token
+			inst.Op = ir.OpField
+			inst.Field = f
+			inst.Src[0] = base
 		} else if isFloatToken(mnem) || ((mnem == "-" || mnem == "+") && isFloatToken(c.peekAt(1))) {
 			if !dst.IsVec() {
 				return ir.Instruction{}, fmt.Errorf("line %d: a float literal requires a vector register (v0..v15)", lineNo)
@@ -425,11 +550,19 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		if err := c.expect(","); err != nil {
 			return inst, err
 		}
-		size, err := parseImm(c, lineNo)
-		if err != nil {
-			return inst, err
+		if isIdent(c.peek()) {
+			name, err := c.next()
+			if err != nil {
+				return inst, err
+			}
+			inst.Struct = name // Size is resolved in Parse
+		} else {
+			size, err := parseImm(c, lineNo)
+			if err != nil {
+				return inst, err
+			}
+			inst.Size = size
 		}
-		inst.Size = size
 
 	case ir.OpArenaDestroy, ir.OpPrint, ir.OpRet:
 		if op == ir.OpRet && !c.more() {
