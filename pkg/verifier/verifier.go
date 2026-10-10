@@ -462,10 +462,8 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			if err != nil {
 				return nil, err
 			}
-			if resolved.Op == ir.OpLoad || resolved.Op == ir.OpStore {
-				if err := v.annotateWidth(st, &resolved); err != nil {
-					return nil, err
-				}
+			if err := v.annotate(st, &resolved); err != nil {
+				return nil, err
 			}
 			if err := v.apply(resolved, st, v.refOf[[2]int{bi, ii}], v.allocOf[[2]int{bi, ii}]); err != nil {
 				return nil, err
@@ -748,9 +746,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		return nil
 
 	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
-		return v.floatBin(st, inst, TypeF64)
-	case ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
-		return v.floatBin(st, inst, TypeF32)
+		return v.floatBin(st, inst)
 
 	case ir.OpIToF:
 		return v.iToF(st, inst, TypeF64)
@@ -758,16 +754,17 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		return v.iToF(st, inst, TypeF32)
 
 	case ir.OpFToI:
-		return v.fToI(st, inst, TypeF64)
-	case ir.OpF32ToI:
-		return v.fToI(st, inst, TypeF32)
+		return v.fToI(st, inst)
 
 	case ir.OpPrintF:
-		_, err := v.floatOf(st, inst.Src[0], TypeF64, inst)
-		return err
-	case ir.OpPrintF32:
-		_, err := v.floatOf(st, inst.Src[0], TypeF32, inst)
-		return err
+		a, err := v.defined(st, inst.Src[0], inst)
+		if err != nil {
+			return err
+		}
+		if !isFloat(a.Type) {
+			return v.errf(inst, "expected a float in %s, got %s", inst.Src[0], a.Type)
+		}
+		return nil
 
 	case ir.OpVConst:
 		if !inst.Dst.IsVec() {
@@ -779,17 +776,21 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if !inst.Dst.IsVec() {
 			return v.errf(inst, "a vector result requires a vector register")
 		}
-		if inst.Vec == ir.VecI32x4 || inst.Vec == ir.VecI64x2 {
+		a, err := v.defined(st, inst.Src[0], inst)
+		if err != nil {
+			return err
+		}
+		if !isVecType(a.Type) {
+			return v.errf(inst, "expected a vector in %s, got %s", inst.Src[0], a.Type)
+		}
+		vt := a.Type
+		if vt == TypeI32x4 || vt == TypeI64x2 {
 			if inst.Op == ir.OpVDiv {
 				return v.errf(inst, "packed integer division is not available")
 			}
-			if inst.Op == ir.OpVMul && inst.Vec == ir.VecI64x2 {
+			if inst.Op == ir.OpVMul && vt == TypeI64x2 {
 				return v.errf(inst, "packed 64-bit multiply is not available")
 			}
-		}
-		vt := vecType(inst.Vec)
-		if _, err := v.vecOf(st, inst.Src[0], vt, inst); err != nil {
-			return err
 		}
 		if _, err := v.vecOf(st, inst.Src[1], vt, inst); err != nil {
 			return err
@@ -797,8 +798,12 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		st.Regs[inst.Dst] = RegState{Defined: true, Type: vt, RefID: -1, AllocID: -1}
 		return nil
 	case ir.OpPrintV:
-		if _, err := v.vecOf(st, inst.Src[0], vecType(inst.Vec), inst); err != nil {
+		a, err := v.defined(st, inst.Src[0], inst)
+		if err != nil {
 			return err
+		}
+		if !isVecType(a.Type) {
+			return v.errf(inst, "expected a vector in %s, got %s", inst.Src[0], a.Type)
 		}
 		return nil
 
@@ -1078,6 +1083,29 @@ func vecType(k ir.VecKind) RegType {
 	}
 }
 
+// vecKindOf maps a vector register type back to its IR kind.
+func vecKindOf(t RegType) ir.VecKind {
+	switch t {
+	case TypeF64x2:
+		return ir.VecF64x2
+	case TypeI32x4:
+		return ir.VecI32x4
+	case TypeI64x2:
+		return ir.VecI64x2
+	default:
+		return ir.VecF32x4
+	}
+}
+
+// isVecType reports whether t is a SIMD vector type.
+func isVecType(t RegType) bool {
+	switch t {
+	case TypeF32x4, TypeF64x2, TypeI32x4, TypeI64x2:
+		return true
+	}
+	return false
+}
+
 func (v *Verifier) vecOf(st *State, r ir.Register, want RegType, inst ir.Instruction) (*RegState, error) {
 	rs, err := v.defined(st, r, inst)
 	if err != nil {
@@ -1192,33 +1220,49 @@ func (v *Verifier) accessType(st *State, ptr *RegState, mem ir.Mem, inst ir.Inst
 	return 0, 0, v.errf(inst, "pointer has no type; cannot determine the access width")
 }
 
-// annotateWidth records the access width and signedness on a load/store so the
-// code generator can emit the right instruction.
-func (v *Verifier) annotateWidth(st *State, inst *ir.Instruction) error {
-	ptr, err := v.dataPtr(st, inst.Mem.Base, *inst)
-	if err != nil {
-		return err
+// annotate records the concrete width (load/store, float ops) or vector kind
+// (SIMD ops) that the instruction needs, so the code generator can emit the
+// right machine instruction.
+func (v *Verifier) annotate(st *State, inst *ir.Instruction) error {
+	switch inst.Op {
+	case ir.OpLoad, ir.OpStore:
+		ptr, err := v.dataPtr(st, inst.Mem.Base, *inst)
+		if err != nil {
+			return err
+		}
+		rt, w, err := v.accessType(st, ptr, inst.Mem, *inst)
+		if err != nil {
+			return err
+		}
+		inst.Width = w
+		inst.Signed = isSigned(rt)
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv, ir.OpFToI, ir.OpPrintF:
+		if rs := st.Regs[inst.Src[0]]; rs.Defined && isFloat(rs.Type) {
+			inst.Width = width(rs.Type)
+		}
+	case ir.OpVAdd, ir.OpVSub, ir.OpVMul, ir.OpVDiv, ir.OpPrintV:
+		if rs := st.Regs[inst.Src[0]]; rs.Defined && isVecType(rs.Type) {
+			inst.Vec = vecKindOf(rs.Type)
+		}
 	}
-	rt, w, err := v.accessType(st, ptr, inst.Mem, *inst)
-	if err != nil {
-		return err
-	}
-	inst.Width = w
-	inst.Signed = isSigned(rt)
 	return nil
 }
 
-func (v *Verifier) floatBin(st *State, inst ir.Instruction, ft RegType) error {
+func (v *Verifier) floatBin(st *State, inst ir.Instruction) error {
 	if !inst.Dst.IsVec() {
 		return v.errf(inst, "a float result requires a vector register")
 	}
-	if _, err := v.floatOf(st, inst.Src[0], ft, inst); err != nil {
+	a, err := v.defined(st, inst.Src[0], inst)
+	if err != nil {
 		return err
 	}
-	if _, err := v.floatOf(st, inst.Src[1], ft, inst); err != nil {
+	if !isFloat(a.Type) {
+		return v.errf(inst, "expected a float in %s, got %s", inst.Src[0], a.Type)
+	}
+	if _, err := v.floatOf(st, inst.Src[1], a.Type, inst); err != nil {
 		return err
 	}
-	st.Regs[inst.Dst] = RegState{Defined: true, Type: ft, RefID: -1, AllocID: -1}
+	st.Regs[inst.Dst] = RegState{Defined: true, Type: a.Type, RefID: -1, AllocID: -1}
 	return nil
 }
 
@@ -1233,12 +1277,16 @@ func (v *Verifier) iToF(st *State, inst ir.Instruction, ft RegType) error {
 	return nil
 }
 
-func (v *Verifier) fToI(st *State, inst ir.Instruction, ft RegType) error {
+func (v *Verifier) fToI(st *State, inst ir.Instruction) error {
 	if !inst.Dst.IsGP() {
 		return v.errf(inst, "%s result requires a general register", inst.Op)
 	}
-	if _, err := v.floatOf(st, inst.Src[0], ft, inst); err != nil {
+	a, err := v.defined(st, inst.Src[0], inst)
+	if err != nil {
 		return err
+	}
+	if !isFloat(a.Type) {
+		return v.errf(inst, "expected a float in %s, got %s", inst.Src[0], a.Type)
 	}
 	st.Regs[inst.Dst] = unknownScalar()
 	return nil

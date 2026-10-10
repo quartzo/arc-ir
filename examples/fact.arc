@@ -5,7 +5,7 @@ func main:
     PRINT r0
     RET r0
 
-func fact(r1: scalar):
+func fact(r1: i64):
     JGT r1, 1, rec
     r0 = 1
     RET r0

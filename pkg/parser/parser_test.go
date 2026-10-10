@@ -92,7 +92,7 @@ func TestParseFunc(t *testing.T) {
 		"    r2 = 4\n" +
 		"    CALL add\n" +
 		"    RET r0\n" +
-		"func add(r1: scalar, r2: scalar):\n" +
+		"func add(r1: i64, r2: i64):\n" +
 		"    r0 = ADD r1, r2\n" +
 		"    RET r0\n"
 	prog, err := Parse(src)
@@ -133,7 +133,7 @@ func TestParsePtrParam(t *testing.T) {
 func TestParseReturnType(t *testing.T) {
 	src := "func f() -> arena:\n    RET\n" +
 		"func g() -> ptr([i64; 8]):\n    RET\n" +
-		"func h() -> scalar:\n    RET\n"
+		"func h() -> i64:\n    RET\n"
 	prog, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -210,29 +210,29 @@ func TestParseFloat(t *testing.T) {
 }
 
 func TestParseF32(t *testing.T) {
-	prog, err := Parse("v1 = f32(2.5)\nv2 = FADD32 v1, v1\nr1 = F32TOI v2\nv3 = ITOF32 r1\nPRINTF32 v3\n")
+	prog, err := Parse("v1 = f32(2.5)\nv2 = FADD v1, v1\nr1 = FTOI v2\nv3 = ITOF32 r1\nPRINTF v3\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	if in := prog.Instrs[0]; in.Op != ir.OpFConst || !in.F32 || in.FImm != 2.5 {
 		t.Errorf("f32 const parsed as %+v", in)
 	}
-	if in := prog.Instrs[1]; in.Op != ir.OpF32Add {
-		t.Errorf("FADD32 parsed as %+v", in)
+	if in := prog.Instrs[1]; in.Op != ir.OpFAdd {
+		t.Errorf("FADD parsed as %+v", in)
 	}
-	if in := prog.Instrs[2]; in.Op != ir.OpF32ToI {
-		t.Errorf("F32TOI parsed as %+v", in)
+	if in := prog.Instrs[2]; in.Op != ir.OpFToI {
+		t.Errorf("FTOI parsed as %+v", in)
 	}
 	if in := prog.Instrs[3]; in.Op != ir.OpIToF32 {
 		t.Errorf("ITOF32 parsed as %+v", in)
 	}
-	if in := prog.Instrs[4]; in.Op != ir.OpPrintF32 {
-		t.Errorf("PRINTF32 parsed as %+v", in)
+	if in := prog.Instrs[4]; in.Op != ir.OpPrintF {
+		t.Errorf("PRINTF parsed as %+v", in)
 	}
 }
 
 func TestParseSIMD(t *testing.T) {
-	prog, err := Parse("v1 = f32x4(1.0, 2.0, 3.0, 4.0)\nv2 = i32x4(7)\nv3 = VADD.f32x4 v1, v1\nPRINTV.i32x4 v2\n")
+	prog, err := Parse("v1 = f32x4(1.0, 2.0, 3.0, 4.0)\nv2 = i32x4(7)\nv3 = VADD v1, v1\nPRINTV v2\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -242,11 +242,11 @@ func TestParseSIMD(t *testing.T) {
 	if in := prog.Instrs[1]; in.Op != ir.OpVConst || in.Vec != ir.VecI32x4 || len(in.Lanes) != 4 || in.Lanes[3] != 7 {
 		t.Errorf("i32x4 broadcast parsed as %+v", in)
 	}
-	if in := prog.Instrs[2]; in.Op != ir.OpVAdd || in.Vec != ir.VecF32x4 {
-		t.Errorf("VADD.f32x4 parsed as %+v", in)
+	if in := prog.Instrs[2]; in.Op != ir.OpVAdd {
+		t.Errorf("VADD parsed as %+v", in)
 	}
-	if in := prog.Instrs[3]; in.Op != ir.OpPrintV || in.Vec != ir.VecI32x4 {
-		t.Errorf("PRINTV.i32x4 parsed as %+v", in)
+	if in := prog.Instrs[3]; in.Op != ir.OpPrintV {
+		t.Errorf("PRINTV parsed as %+v", in)
 	}
 }
 
@@ -264,7 +264,7 @@ func TestParseSIMD64(t *testing.T) {
 }
 
 func TestParseStruct(t *testing.T) {
-	src := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
+	src := "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 		"func main:\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
 		"    r3 = r2.next\n" +
@@ -296,7 +296,7 @@ func TestParseStruct(t *testing.T) {
 }
 
 func TestParsePtrStruct(t *testing.T) {
-	prog, err := Parse("struct Node { next: ptr([i64; 1]), val: scalar }\nfunc f(r1: ptr(Node)):\n    RET\n")
+	prog, err := Parse("struct Node { next: ptr([i64; 1]), val: i64 }\nfunc f(r1: ptr(Node)):\n    RET\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestParseErrors(t *testing.T) {
 		{"raw ptr rejected", "func f(r1: ptr(64)):\n    RET\n", "ptr needs a struct or array"},
 		{"raw ptr return rejected", "func f() -> ptr(64):\n    RET\n", "ptr needs a struct or array"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown type"},
-		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},
+		{"own on non-arena", "func f(r1: own i64):\n    RET\n", "only valid for arena"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
 	}

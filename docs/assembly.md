@@ -157,7 +157,7 @@ execution continues with the next instruction.
 
 | Instruction | Semantics |
 |-------------|-----------|
-| `PRINT rsrc` | print the scalar `rsrc` (decimal, newline-terminated) |
+| `PRINT rsrc` | print the integer `rsrc` (decimal, newline-terminated) |
 
 ### 4.7 Float
 
@@ -165,19 +165,20 @@ execution continues with the next instruction.
 |-------------|-----------|
 | `vdst = <float literal>` | `vdst = literal` (`f64`) |
 | `vdst = f32(<literal>)` | `vdst = literal` (`f32`) |
-| `vdst = FADD va, vb` | `vdst = va + vb` (`f64`; also `FSUB`, `FMUL`, `FDIV`) |
-| `vdst = FADD32 va, vb` | `vdst = va + vb` (`f32`; also `FSUB32`, `FMUL32`, `FDIV32`) |
+| `vdst = FADD va, vb` | `vdst = va + vb` (also `FSUB`, `FMUL`, `FDIV`) |
 | `vdst = ITOF rsrc` | integer to `f64` |
 | `vdst = ITOF32 rsrc` | integer to `f32` |
-| `rdst = FTOI vsrc` | `f64` to integer (truncating) |
-| `rdst = F32TOI vsrc` | `f32` to integer (truncating) |
-| `PRINTF vsrc` | print an `f64` (newline-terminated) |
-| `PRINTF32 vsrc` | print an `f32` (newline-terminated) |
+| `rdst = FTOI vsrc` | float to integer (truncating) |
+| `PRINTF vsrc` | print a float (newline-terminated) |
 
-Float values live in vector registers (`v0`–`v15`). `f32` and `f64` never mix
-implicitly; the verifier enforces that operands match the instruction's width
-and that conversions are explicit. A float can never be used as a pointer or an
-index, so floats do not affect the memory-safety guarantee.
+Float values live in vector registers (`v0`–`v15`). The arithmetic and
+conversion mnemonics carry **no width**: the operand type picks it (`f32` →
+`addss`/`cvttss2siq`, `f64` → `addsd`/`cvttsd2siq`). The verifier requires the
+two operands of an arithmetic op to have the same type, and rejects a type
+mismatch. `f32` and `f64` never mix implicitly. Only `ITOF`/`ITOF32` and the
+literals name a width, because there is no operand to infer it from. A float can
+never be used as a pointer or an index, so floats do not affect the memory-safety
+guarantee.
 
 ### 4.8 SIMD
 
@@ -187,10 +188,12 @@ index, so floats do not affect the memory-safety guarantee.
 | `vdst = f64x2(a, b)` | 128-bit vector of two `f64` |
 | `vdst = i32x4(a, b, c, d)` | 128-bit vector of four `i32` |
 | `vdst = i64x2(a, b)` | 128-bit vector of two `i64` |
-| `vdst = VADD.<kind> va, vb` | packed add (`VSUB`, `VMUL`; `VDIV` for float kinds) |
-| `PRINTV.<kind> vsrc` | print the lanes, one per line |
+| `vdst = VADD va, vb` | packed add (`VSUB`, `VMUL`; `VDIV` for float kinds) |
+| `PRINTV vsrc` | print the lanes, one per line |
 
-`<kind>` is `f32x4`, `f64x2`, `i32x4` or `i64x2`. Vectors live in vector
+The vector kind is **inferred from the operands** (`f32x4`, `f64x2`, `i32x4` or
+`i64x2`), so the arithmetic and print mnemonics carry no suffix; only the
+literals name their kind. Vectors live in vector
 registers; the verifier tracks the vector type (element kind and width) but not
 per-lane values, and requires the two operands of an operation to have the same
 kind. Packed integer division and packed 64-bit multiply are not available.
@@ -236,7 +239,7 @@ func main:
     PRINT r0
     RET r0
 
-func add(r1: scalar, r2: scalar):
+func add(r1: i64, r2: i64):
     r0 = ADD r1, r2
     RET r0
 ```
@@ -250,8 +253,8 @@ The calling convention is:
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 
-Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`; the
-alias `scalar` means `i64`), `arena`, or `ptr`. A `ptr` parameter carries the
+Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`),
+`arena`, or `ptr`. A `ptr` parameter carries the
 type of the region it points to — either a named struct (`ptr(Struct)`, see §9)
 or an array of scalar elements (`ptr([T; N])`, where `T` is `i8`…`i64`,
 `u8`…`u64`, `f32` or `f64`, and `N` is a positive element count). An `arena`
@@ -281,7 +284,7 @@ func make(r1: arena) -> ptr([i64; 8]):
     RET r0
 ```
 
-The default return type is `scalar`. The verifier checks at every `RET` that
+The default return type is `i64`. The verifier checks at every `RET` that
 the returned register matches the declared return type (and, for a `ptr`, that
 the target matches and the allocation is large enough and still live), and gives
 the caller's `r0` that type after the call.
@@ -337,7 +340,7 @@ A struct is a named layout. Each field is an integer of some width, an arena
 handle, or a pointer (all one word):
 
 ```
-struct Node { next: ptr(Node), val: scalar }
+struct Node { next: ptr(Node), val: i64 }
 struct Rec  { a: u8, b: u16, c: u32, d: u64 }
 ```
 
@@ -384,7 +387,7 @@ of type `T`, where `T` is an integer (`i8`…`i64`, `u8`…`u64`) or a float (`f
 may be a parameter type, a return type, or a struct field:
 
 ```
-func first(r1: ptr([i64; 4])) -> scalar:
+func first(r1: ptr([i64; 4])) -> i64:
     r0 = LOAD [r1]
     RET r0
 ```

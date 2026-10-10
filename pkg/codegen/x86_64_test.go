@@ -99,11 +99,11 @@ func TestCompileAndRun(t *testing.T) {
 		{"hello", "entry:\n    r1 = 40\n    r2 = 2\n    r3 = ADD r1, r2\n    PRINT r3\n    RET r3\n", "42"},
 		{"call", "func main:\n" +
 			"    r1 = 3\n    r2 = 4\n    CALL add\n    PRINT r0\n    RET r0\n" +
-			"func add(r1: scalar, r2: scalar):\n" +
+			"func add(r1: i64, r2: i64):\n" +
 			"    r0 = ADD r1, r2\n    RET r0\n", "7"},
 		{"fact", "func main:\n" +
 			"    r1 = 5\n    CALL fact\n    PRINT r0\n    RET r0\n" +
-			"func fact(r1: scalar):\n" +
+			"func fact(r1: i64):\n" +
 			"    JGT r1, 1, rec\n    r0 = 1\n    RET r0\n" +
 			"rec:\n    r2 = SUB r1, 1\n    r3 = r1\n    r1 = r2\n    CALL fact\n" +
 			"    r4 = MUL r3, r0\n    r0 = r4\n    RET r0\n", "120"},
@@ -134,22 +134,22 @@ func TestCompileAndRun(t *testing.T) {
 			"    v1 = 2.5\n    v2 = 4.0\n    v3 = FMUL v1, v2\n    v4 = FADD v3, v1\n" +
 			"    PRINTF v4\n    r1 = FTOI v4\n    PRINT r1\n    RET r1\n", "12.5\n12"},
 		{"f32", "func main:\n" +
-			"    v1 = f32(2.5)\n    v2 = f32(4.0)\n    v3 = FMUL32 v1, v2\n    v4 = FADD32 v3, v1\n" +
-			"    PRINTF32 v4\n    r1 = F32TOI v4\n    PRINT r1\n    RET r1\n", "12.5\n12"},
+			"    v1 = f32(2.5)\n    v2 = f32(4.0)\n    v3 = FMUL v1, v2\n    v4 = FADD v3, v1\n" +
+			"    PRINTF v4\n    r1 = FTOI v4\n    PRINT r1\n    RET r1\n", "12.5\n12"},
 		{"simd", "func main:\n" +
 			"    v1 = f32x4(1.0, 2.0, 3.0, 4.0)\n    v2 = f32x4(10.0, 20.0, 30.0, 40.0)\n" +
-			"    v3 = VADD.f32x4 v1, v2\n    PRINTV.f32x4 v3\n    RET\n", "11\n22\n33\n44"},
+			"    v3 = VADD v1, v2\n    PRINTV v3\n    RET\n", "11\n22\n33\n44"},
 		{"simd64", "func main:\n" +
-			"    v1 = f64x2(1.5, 2.5)\n    v2 = f64x2(10.0, 20.0)\n    v3 = VADD.f64x2 v1, v2\n    PRINTV.f64x2 v3\n" +
-			"    v4 = i64x2(100, 200)\n    v5 = i64x2(1, 2)\n    v6 = VADD.i64x2 v4, v5\n    PRINTV.i64x2 v6\n    RET\n", "11.5\n22.5\n101\n202"},
-		{"struct", "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
+			"    v1 = f64x2(1.5, 2.5)\n    v2 = f64x2(10.0, 20.0)\n    v3 = VADD v1, v2\n    PRINTV v3\n" +
+			"    v4 = i64x2(100, 200)\n    v5 = i64x2(1, 2)\n    v6 = VADD v4, v5\n    PRINTV v6\n    RET\n", "11.5\n22.5\n101\n202"},
+		{"struct", "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 			"func main:\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, Node\n" +
 			"    r3 = ARENA_ALLOC r1, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +
 			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r6 = r2.next\n" +
 			"    r7 = LOAD [r6]\n    PRINT r7\n    r8 = r2.val\n    PRINT r8\n" +
 			"    ARENA_DESTROY r1\n    RET r7\n", "42\n7"},
-		{"ptr_struct", "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
+		{"ptr_struct", "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 			"func main:\n" +
 			"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r9, Node\n" +
 			"    r3 = ARENA_ALLOC r9, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +

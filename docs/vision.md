@@ -60,14 +60,18 @@ alternatives are recorded so the choices are visible and revisitable.
   pointers.
 - Tagged values / fat pointers — runtime cost and size overhead.
 
-### Memory width
+### Memory width and operators
 
-- **(chosen) Type-driven access width** — the pointed-to type names the width
-  (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`), so `LOAD`/`STORE` carry no width
-  suffix and there is no untyped memory to guess at. An integer load extends to
-  64 bits by its signedness; a store writes the low bytes.
-- Explicit width mnemonics (`LOAD8`, `STORE16`, ...) — more surface, and every
-  access must restate a width the type already implies.
+- **(chosen) Type-driven width and operator** — the pointed-to type names the
+  access width (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`), so `LOAD`/`STORE` carry no
+  width suffix and there is no untyped memory to guess at. An integer load
+  extends to 64 bits by its signedness; a store writes the low bytes. The same
+  rule picks the operator: a comparison lowers to `jl`/`jb` by the operand's
+  signedness, and `FADD`/`FTOI`/`PRINTF` and the packed ops pick their width or
+  kind from the operands. Only a literal or a conversion with no operand to
+  infer from (`f32(x)`, `ITOF`/`ITOF32`) names a type in the text.
+- Explicit width mnemonics (`LOAD8`, `FADD32`, `VADD.f32x4`, ...) — more surface,
+  and every op restates a width or kind the operands already imply.
 - Byte-granular addressing only (e.g. `[u8; N]` buffers) — forces byte-at-a-time
   access and loses the element type.
 

@@ -366,18 +366,8 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 
 	mnem := c.peek()
 
-	// A vector mnemonic may carry its element type as a suffix: "VADD.f32x4".
-	base := mnem
-	var vec ir.VecKind
-	hasVec := false
-	if b, suffix, ok := strings.Cut(mnem, "."); ok {
-		if k, kok := ir.ParseVecKind(strings.ToLower(suffix)); kok {
-			base, vec, hasVec = b, k, true
-		}
-	}
-
 	// Not a mnemonic: this is a MOV written as "rdst = <reg|imm>".
-	op, isOp := ir.OpFromName(strings.ToUpper(base))
+	op, isOp := ir.OpFromName(strings.ToUpper(mnem))
 	if !isOp {
 		// Field store: "rbase.field = rvalue".
 		if b, f, ok := splitField(mnem); ok && c.peekAt(1) == "=" {
@@ -480,9 +470,6 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	inst, err := parseOp(c, op, dst, lineNo)
 	if err != nil {
 		return ir.Instruction{}, err
-	}
-	if hasVec {
-		inst.Vec = vec
 	}
 	if op.HasDest() && !inst.Dst.Valid() {
 		return ir.Instruction{}, fmt.Errorf("line %d: %s requires a destination register", lineNo, op)
@@ -710,7 +697,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			return inst, err
 		}
 
-	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv, ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
 		a, err := c.reg(lineNo)
 		if err != nil {
 			return inst, err
@@ -725,7 +712,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		}
 		inst.Src[1] = b
 
-	case ir.OpIToF, ir.OpIToF32, ir.OpFToI, ir.OpF32ToI, ir.OpPrintF, ir.OpPrintF32:
+	case ir.OpIToF, ir.OpIToF32, ir.OpFToI, ir.OpPrintF:
 		r, err := c.reg(lineNo)
 		if err != nil {
 			return inst, err

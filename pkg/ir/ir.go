@@ -64,7 +64,8 @@ func (r Register) String() string {
 type ValKind int
 
 const (
-	// KindScalar is a 64-bit integer parameter.
+	// KindScalar is a scalar (integer or float) parameter. The concrete type is
+	// in the Scalar field.
 	KindScalar ValKind = iota
 	// KindArena is an arena-handle parameter.
 	KindArena
@@ -73,27 +74,17 @@ const (
 )
 
 var kindNames = map[ValKind]string{
-	KindScalar: "scalar",
+	KindScalar: "value",
 	KindArena:  "arena",
 	KindPtr:    "ptr",
 }
 
-// String returns the textual name of the parameter type.
+// String returns the textual name of the parameter kind.
 func (k ValKind) String() string {
 	if n, ok := kindNames[k]; ok {
 		return n
 	}
 	return "unknown"
-}
-
-// ParseValKind resolves a textual parameter type.
-func ParseValKind(s string) (ValKind, bool) {
-	for k, n := range kindNames {
-		if n == s {
-			return k, true
-		}
-	}
-	return KindScalar, false
 }
 
 // VecKind is the element type of a SIMD vector.
@@ -168,11 +159,8 @@ func (k ScalarKind) String() string {
 	return "scalar(?)"
 }
 
-// ParseScalarKind resolves a textual scalar type. "scalar" is an alias for i64.
+// ParseScalarKind resolves a textual scalar type.
 func ParseScalarKind(s string) (ScalarKind, bool) {
-	if s == "scalar" {
-		return I64, true
-	}
 	for k, n := range scalarNames {
 		if n == s {
 			return k, true
@@ -245,26 +233,20 @@ const (
 	OpSub          // rdst = SUB ra, (rb | imm)
 	OpMul          // rdst = MUL ra, (rb | imm)
 	OpFConst       // vdst = <float literal>       (f64, or f32 when F32 is set)
-	OpFAdd         // vdst = FADD vsrc, vsrc       (f64)
-	OpFSub         // vdst = FSUB vsrc, vsrc       (f64)
-	OpFMul         // vdst = FMUL vsrc, vsrc       (f64)
-	OpFDiv         // vdst = FDIV vsrc, vsrc       (f64)
-	OpF32Add       // vdst = FADD32 vsrc, vsrc     (f32)
-	OpF32Sub       // vdst = FSUB32 vsrc, vsrc     (f32)
-	OpF32Mul       // vdst = FMUL32 vsrc, vsrc     (f32)
-	OpF32Div       // vdst = FDIV32 vsrc, vsrc     (f32)
+	OpFAdd         // vdst = FADD vsrc, vsrc       (f32 or f64 by operand type)
+	OpFSub         // vdst = FSUB vsrc, vsrc       (f32 or f64 by operand type)
+	OpFMul         // vdst = FMUL vsrc, vsrc       (f32 or f64 by operand type)
+	OpFDiv         // vdst = FDIV vsrc, vsrc       (f32 or f64 by operand type)
 	OpIToF         // vdst = ITOF rsrc   (integer to f64)
 	OpIToF32       // vdst = ITOF32 rsrc (integer to f32)
-	OpFToI         // rdst = FTOI vsrc   (f64 to integer)
-	OpF32ToI       // rdst = F32TOI vsrc (f32 to integer)
+	OpFToI         // rdst = FTOI vsrc   (f32 or f64 to integer)
 	OpPrint        // PRINT rsrc
-	OpPrintF       // PRINTF vsrc        (f64)
-	OpPrintF32     // PRINTF32 vsrc      (f32)
+	OpPrintF       // PRINTF vsrc        (f32 or f64 by operand type)
 	OpVConst       // vdst = f32x4(...) | i32x4(...)
-	OpVAdd         // vdst = VADD.<kind> vsrc, vsrc
-	OpVSub         // vdst = VSUB.<kind> vsrc, vsrc
-	OpVMul         // vdst = VMUL.<kind> vsrc, vsrc
-	OpVDiv         // vdst = VDIV.<kind> vsrc, vsrc
+	OpVAdd         // vdst = VADD vsrc, vsrc  (kind from operand type)
+	OpVSub         // vdst = VSUB vsrc, vsrc  (kind from operand type)
+	OpVMul         // vdst = VMUL vsrc, vsrc  (kind from operand type)
+	OpVDiv         // vdst = VDIV vsrc, vsrc  (kind from operand type)
 	OpPrintV       // PRINTV vsrc
 	OpRet          // RET rsrc
 	OpCall         // CALL name
@@ -302,17 +284,11 @@ var opNames = map[OpCode]string{
 	OpFSub:         "FSUB",
 	OpFMul:         "FMUL",
 	OpFDiv:         "FDIV",
-	OpF32Add:       "FADD32",
-	OpF32Sub:       "FSUB32",
-	OpF32Mul:       "FMUL32",
-	OpF32Div:       "FDIV32",
 	OpIToF:         "ITOF",
 	OpIToF32:       "ITOF32",
 	OpFToI:         "FTOI",
-	OpF32ToI:       "F32TOI",
 	OpPrint:        "PRINT",
 	OpPrintF:       "PRINTF",
-	OpPrintF32:     "PRINTF32",
 	OpVConst:       "VCONST",
 	OpVAdd:         "VADD",
 	OpVSub:         "VSUB",
@@ -374,8 +350,7 @@ func (o OpCode) HasDest() bool {
 	switch o {
 	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpField, OpAdd, OpSub, OpMul,
 		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv,
-		OpF32Add, OpF32Sub, OpF32Mul, OpF32Div,
-		OpIToF, OpIToF32, OpFToI, OpF32ToI,
+		OpIToF, OpIToF32, OpFToI,
 		OpVConst, OpVAdd, OpVSub, OpVMul, OpVDiv:
 		return true
 	default:
@@ -519,16 +494,16 @@ func (i Instruction) String() string {
 			return fmt.Sprintf("%sf32(%v)", dst, i.FImm)
 		}
 		return fmt.Sprintf("%s%v", dst, i.FImm)
-	case OpFAdd, OpFSub, OpFMul, OpFDiv, OpF32Add, OpF32Sub, OpF32Mul, OpF32Div:
+	case OpFAdd, OpFSub, OpFMul, OpFDiv:
 		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], i.Src[1])
-	case OpIToF, OpIToF32, OpFToI, OpF32ToI:
+	case OpIToF, OpIToF32, OpFToI:
 		return fmt.Sprintf("%s%s %s", dst, i.Op, i.Src[0])
-	case OpPrintF, OpPrintF32:
+	case OpPrintF:
 		return fmt.Sprintf("%s %s", i.Op, i.Src[0])
 	case OpVConst:
 		return fmt.Sprintf("%s%s(%s)", dst, i.Vec, formatLanes(i))
 	case OpVAdd, OpVSub, OpVMul, OpVDiv:
-		return fmt.Sprintf("%s%s.%s %s, %s", dst, i.Op, i.Vec, i.Src[0], i.Src[1])
+		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], i.Src[1])
 	case OpPrintV:
 		return fmt.Sprintf("PRINTV %s", i.Src[0])
 	case OpPrint:

@@ -342,13 +342,17 @@ func (x *x64) inst(inst ir.Instruction) error {
 		}
 
 	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+		suf := "sd"
+		if inst.Width == 4 {
+			suf = "ss"
+		}
 		a := x.loadF(inst.Src[0], xmmScratch1)
 		if a != xmmScratch1 {
-			x.line("\tmovsd %s, %s", a, xmmScratch1)
+			x.line("\tmov%s %s, %s", suf, a, xmmScratch1)
 		}
 		b := x.loadF(inst.Src[1], xmmScratch2)
-		fmnem := map[ir.OpCode]string{ir.OpFAdd: "addsd", ir.OpFSub: "subsd", ir.OpFMul: "mulsd", ir.OpFDiv: "divsd"}[inst.Op]
-		x.line("\t%s %s, %s", fmnem, b, xmmScratch1)
+		op := map[ir.OpCode]string{ir.OpFAdd: "add", ir.OpFSub: "sub", ir.OpFMul: "mul", ir.OpFDiv: "div"}[inst.Op]
+		x.line("\t%s%s %s, %s", op, suf, b, xmmScratch1)
 		x.store(xmmScratch1, inst.Dst)
 
 	case ir.OpIToF:
@@ -362,27 +366,23 @@ func (x *x64) inst(inst ir.Instruction) error {
 
 	case ir.OpFToI:
 		src := x.loadF(inst.Src[0], xmmScratch1)
-		x.line("\tcvttsd2siq %s, %s", src, scratch3)
+		if inst.Width == 4 {
+			x.line("\tcvttss2siq %s, %s", src, scratch3)
+		} else {
+			x.line("\tcvttsd2siq %s, %s", src, scratch3)
+		}
 		x.store(scratch3, inst.Dst)
 
 	case ir.OpPrintF:
 		x.saveAll()
 		src := x.loadF(inst.Src[0], xmmScratch1)
-		if src != "%xmm0" {
+		if inst.Width == 4 {
+			x.line("\tcvtss2sd %s, %%xmm0", src)
+		} else if src != "%xmm0" {
 			x.line("\tmovsd %s, %%xmm0", src)
 		}
 		x.line("\tcall arc_print_f64")
 		x.restoreAll()
-
-	case ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
-		a := x.loadF(inst.Src[0], xmmScratch1)
-		if a != xmmScratch1 {
-			x.line("\tmovss %s, %s", a, xmmScratch1)
-		}
-		b := x.loadF(inst.Src[1], xmmScratch2)
-		f32mnem := map[ir.OpCode]string{ir.OpF32Add: "addss", ir.OpF32Sub: "subss", ir.OpF32Mul: "mulss", ir.OpF32Div: "divss"}[inst.Op]
-		x.line("\t%s %s, %s", f32mnem, b, xmmScratch1)
-		x.store(xmmScratch1, inst.Dst)
 
 	case ir.OpIToF32:
 		src := x.load(inst.Src[0], scratch1)
@@ -392,18 +392,6 @@ func (x *x64) inst(inst ir.Instruction) error {
 			x.line("\tcvtsi2ssq %s, %s", src, xmmScratch1)
 			x.store(xmmScratch1, inst.Dst)
 		}
-
-	case ir.OpF32ToI:
-		src := x.loadF(inst.Src[0], xmmScratch1)
-		x.line("\tcvttss2siq %s, %s", src, scratch3)
-		x.store(scratch3, inst.Dst)
-
-	case ir.OpPrintF32:
-		x.saveAll()
-		src := x.loadF(inst.Src[0], xmmScratch1)
-		x.line("\tcvtss2sd %s, %%xmm0", src)
-		x.line("\tcall arc_print_f64")
-		x.restoreAll()
 
 	case ir.OpVConst:
 		lbl := x.vecConstLabel(inst.Vec, inst.Lanes)

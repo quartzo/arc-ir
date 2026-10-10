@@ -1,5 +1,5 @@
 ; ptr_struct.arc - pass a struct by reference; the callee reads its fields.
-struct Node { next: ptr(Node), val: scalar }
+struct Node { next: ptr(Node), val: i64 }
 
 func main:
     r9 = ARENA_CREATE DRAM_LOCAL, 256

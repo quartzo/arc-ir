@@ -1,5 +1,5 @@
 ; struct.arc - a named layout with a self-referential pointer field.
-struct Node { next: ptr(Node), val: scalar }
+struct Node { next: ptr(Node), val: i64 }
 
 func main:
     r1 = ARENA_CREATE DRAM_LOCAL, 256

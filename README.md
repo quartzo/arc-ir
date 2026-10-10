@@ -38,15 +38,15 @@ verification and code generation stay simple and direct.
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(...)`) with interprocedural size checks | ✅ |
-| — | Non-scalar returns: `-> arena`, `-> ptr(...)` | ✅ |
+| — | Non-integer returns: `-> arena`, `-> ptr(...)` | ✅ |
 | — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
-| — | Base types: `f64`/`f32` scalars in a separate vector register file (`v0`–`v15`) | ✅ |
+| — | Base types: `f64`/`f32` floats in a separate vector register file (`v0`–`v15`) | ✅ |
 | — | SIMD vectors: `f32x4`/`f64x2`/`i32x4`/`i64x2` packed arithmetic (type-level) | ✅ |
 | — | Structs: named layouts, field access, definite initialization, `ptr(Struct)` params | ✅ |
 | — | Arrays: `[T; N]` regions (`ptr([T; N])`), element-typed loads/stores | ✅ |
-| — | Variable-width memory: `i8`…`i64`/`u8`…`u64` scalars, typed 1/2/4/8-byte loads/stores | ✅ |
+| — | Variable-width memory: `i8`…`i64`/`u8`…`u64` integer types, typed 1/2/4/8-byte loads/stores | ✅ |
 | — | Struct layout: natural alignment, `packed struct`, per-field `align N` | ✅ |
 | — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
 
@@ -141,7 +141,7 @@ func main:
     PRINT r0
     RET r0
 
-func fact(r1: scalar):
+func fact(r1: i64):
     JGT r1, 1, rec
     r0 = 1
     RET r0
@@ -155,7 +155,7 @@ rec:
     RET r0
 ```
 
-Parameters are typed: an integer (`i8`…`i64`, `u8`…`u64`; `scalar` = `i64`),
+Parameters are typed: an integer (`i8`…`i64`, `u8`…`u64`),
 `arena`, or `ptr(...)` (a data pointer to a region — a struct `ptr(Struct)` or an
 array `ptr([T; N])`). The verifier checks each function independently against its
 parameter types, and at every call site checks argument types and that a pointer
@@ -242,8 +242,8 @@ program point it tracks, per register:
 ```go
 type RegState struct {
     Defined   bool
-    Type      RegType // Unknown | Scalar | Arena | DataPtr
-    Min, Max  int64   // scalar value range
+    Type      RegType // Unknown | i8..i64 | u8..u64 | f32 | f64 | Arena | DataPtr
+    Min, Max  int64   // integer value range
     ArenaID   ir.Register
     AllocSize int64   // arena capacity or allocation size
     Destroyed bool
@@ -251,7 +251,7 @@ type RegState struct {
 ```
 
 States are propagated along edges and merged at join points until a fixpoint is
-reached. Conditional jumps **refine** scalar ranges on each edge: after
+reached. Conditional jumps **refine** integer ranges on each edge: after
 `JGE r3, 10, done` the fall-through knows `r3 < 10`, so the dynamic access
 `[r2 + r3*8]` in `loop.arc` is proven to stay within the 128-byte allocation.
 
@@ -261,7 +261,7 @@ Rejected programs include:
   to fit `[0, AllocSize)`.
 - **Use-after-destroy** — touching a pointer whose arena was freed.
 - **Double-destroy**, **use of an uninitialized register**, **type misuse**
-  (`LOAD` from a scalar, `ARENA_ALLOC` on a scalar, ...).
+  (`LOAD` from an integer, `ARENA_ALLOC` on an integer, ...).
 - **Allocation exceeding arena capacity**, **non-positive sizes**.
 
 Errors carry the source line, which lets a generating LLM be fed back in a

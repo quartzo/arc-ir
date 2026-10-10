@@ -184,7 +184,7 @@ func TestVerifyFunctions(t *testing.T) {
 		"    CALL add\n" +
 		"    PRINT r0\n" +
 		"    RET r0\n" +
-		"func add(r1: scalar, r2: scalar):\n" +
+		"func add(r1: i64, r2: i64):\n" +
 		"    r0 = ADD r1, r2\n" +
 		"    RET r0\n"
 	res, err := Verify(mustParse(t, src))
@@ -201,7 +201,7 @@ func TestVerifyRecursion(t *testing.T) {
 		"    r1 = 5\n" +
 		"    CALL fact\n" +
 		"    RET r0\n" +
-		"func fact(r1: scalar):\n" +
+		"func fact(r1: i64):\n" +
 		"    JGT r1, 1, rec\n" +
 		"    r0 = 1\n" +
 		"    RET r0\n" +
@@ -246,7 +246,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 				"    CALL f\n" +
 				"    RET\n" +
-				"func f(r1: scalar):\n" +
+				"func f(r1: i64):\n" +
 				"    r0 = r1\n" +
 				"    RET r0\n",
 			"expected an integer",
@@ -603,7 +603,7 @@ func TestVerifyFloat(t *testing.T) {
 		want string
 	}{
 		{"float as pointer", "func main:\n    v1 = 1.0\n    r1 = LOAD [v1]\n    RET\n", "expected data pointer"},
-		{"FADD on scalar", "func main:\n    r1 = 1\n    v1 = FADD r1, r1\n    RET\n", "expected f64"},
+		{"FADD on scalar", "func main:\n    r1 = 1\n    v1 = FADD r1, r1\n    RET\n", "expected a float"},
 		{"ITOF on float", "func main:\n    v1 = 1.0\n    v2 = ITOF v1\n    RET\n", "expected integer"},
 		{"FTOI into vector", "func main:\n    v1 = 1.0\n    v2 = FTOI v1\n    RET\n", "requires a general register"},
 	}
@@ -624,10 +624,10 @@ func TestVerifyF32(t *testing.T) {
 	valid := "func main:\n" +
 		"    v1 = f32(2.5)\n" +
 		"    v2 = f32(4.0)\n" +
-		"    v3 = FMUL32 v1, v2\n" +
-		"    v4 = FADD32 v3, v1\n" +
-		"    PRINTF32 v4\n" +
-		"    r1 = F32TOI v4\n" +
+		"    v3 = FMUL v1, v2\n" +
+		"    v4 = FADD v3, v1\n" +
+		"    PRINTF v4\n" +
+		"    r1 = FTOI v4\n" +
 		"    RET r1\n"
 	if _, err := Verify(mustParse(t, valid)); err != nil {
 		t.Fatalf("expected f32 program to verify, got %v", err)
@@ -638,8 +638,6 @@ func TestVerifyF32(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"f32 op on f64", "func main:\n    v1 = 1.0\n    v2 = FADD32 v1, v1\n    RET\n", "expected f32"},
-		{"f64 op on f32", "func main:\n    v1 = f32(1.0)\n    v2 = FADD v1, v1\n    RET\n", "expected f64"},
 		{"mixing f32 and f64", "func main:\n    v1 = 1.0\n    v2 = f32(1.0)\n    v3 = FADD v1, v2\n    RET\n", "expected f64"},
 	}
 	for _, tc := range cases {
@@ -659,8 +657,8 @@ func TestVerifySIMD(t *testing.T) {
 	valid := "func main:\n" +
 		"    v1 = f32x4(1.0, 2.0, 3.0, 4.0)\n" +
 		"    v2 = f32x4(10.0, 20.0, 30.0, 40.0)\n" +
-		"    v3 = VADD.f32x4 v1, v2\n" +
-		"    PRINTV.f32x4 v3\n" +
+		"    v3 = VADD v1, v2\n" +
+		"    PRINTV v3\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, valid)); err != nil {
 		t.Fatalf("expected simd program to verify, got %v", err)
@@ -669,8 +667,8 @@ func TestVerifySIMD(t *testing.T) {
 	valid64 := "func main:\n" +
 		"    v1 = f64x2(1.5, 2.5)\n" +
 		"    v2 = f64x2(10.0, 20.0)\n" +
-		"    v3 = VADD.f64x2 v1, v2\n" +
-		"    PRINTV.f64x2 v3\n" +
+		"    v3 = VADD v1, v2\n" +
+		"    PRINTV v3\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, valid64)); err != nil {
 		t.Fatalf("expected f64x2 program to verify, got %v", err)
@@ -681,11 +679,10 @@ func TestVerifySIMD(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"mixing kinds", "func main:\n    v1 = f32x4(1.0)\n    v2 = i32x4(1)\n    v3 = VADD.f32x4 v1, v2\n    RET\n", "expected f32x4"},
-		{"print kind mismatch", "func main:\n    v1 = i32x4(1)\n    PRINTV.f32x4 v1\n    RET\n", "expected f32x4"},
+		{"mixing kinds", "func main:\n    v1 = f32x4(1.0)\n    v2 = i32x4(1)\n    v3 = VADD v1, v2\n    RET\n", "expected f32x4"},
 		{"scalar op on vector", "func main:\n    v1 = f32x4(1.0)\n    r1 = ADD v1, v1\n    RET\n", "expected integer"},
-		{"packed 64-bit multiply", "func main:\n    v1 = i64x2(1)\n    v2 = VMUL.i64x2 v1, v1\n    RET\n", "not available"},
-		{"packed integer divide", "func main:\n    v1 = i32x4(1)\n    v2 = VDIV.i32x4 v1, v1\n    RET\n", "not available"},
+		{"packed 64-bit multiply", "func main:\n    v1 = i64x2(1)\n    v2 = VMUL v1, v1\n    RET\n", "not available"},
+		{"packed integer divide", "func main:\n    v1 = i32x4(1)\n    v2 = VDIV v1, v1\n    RET\n", "not available"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -701,7 +698,7 @@ func TestVerifySIMD(t *testing.T) {
 }
 
 func TestVerifyStruct(t *testing.T) {
-	valid := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
+	valid := "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 		"func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
@@ -725,10 +722,10 @@ func TestVerifyStruct(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"uninitialized field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
+		{"uninitialized field", "struct N { a: i64 }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
 		{"wrong field type", "struct N { p: ptr([i64; 1]) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
 		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 1]\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
-		{"unknown field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
+		{"unknown field", "struct N { a: i64 }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -744,7 +741,7 @@ func TestVerifyStruct(t *testing.T) {
 }
 
 func TestVerifyPtrStruct(t *testing.T) {
-	valid := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
+	valid := "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 		"func main:\n" +
 		"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r9, Node\n" +
@@ -772,8 +769,8 @@ func TestVerifyPtrStruct(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"raw ptr for struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, [i64; 8]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
-		{"uninitialized struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
+		{"raw ptr for struct", "struct N { a: i64 }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, [i64; 8]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
+		{"uninitialized struct", "struct N { a: i64 }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
