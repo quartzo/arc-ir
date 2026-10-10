@@ -24,8 +24,9 @@ memory-safe.
 
 ## 2. Machine model
 
-- **Word size:** 64 bits. Every register and every memory slot holds a 64-bit
-  value. There are no sub-word types.
+- **Word size:** 64 bits. Every register holds a 64-bit value. Memory is
+  accessed in **typed widths** of 1, 2, 4 or 8 bytes; a load extends the value
+  to 64 bits and a store writes the low bytes (see §4.3).
 - **Registers:** 16 general-purpose registers (`r0`–`r15`) and 16 vector
   registers (`v0`–`v15`, mapped to XMM) for floats and SIMD.
 - **Memory:** byte-addressable, little-endian, addressed through 64-bit
@@ -42,9 +43,10 @@ memory-safe.
 | `v0`–`v15` | vector registers: floats (`f64`) and, later, SIMD |
 
 Registers are untyped at the machine level. The verifier assigns each register
-an abstract type at every program point — `scalar`, `f64`, `arena` or
-`data pointer` — and enforces its correct use. Only general registers may hold
-integers, arenas or pointers; floats live in vector registers.
+an abstract type at every program point — an integer type (`i8`…`i64`,
+`u8`…`u64`), `f32`, `f64`, `arena` or `data pointer` — and enforces its correct
+use. Only general registers may hold integers, arenas or pointers; floats live
+in vector registers.
 
 The backend maps ARC registers onto physical x86_64 registers: general
 registers prefer callee-saved ones and spill to the stack under pressure;
@@ -70,14 +72,15 @@ always register-resident.
 | `rdst = MUL ra, rb` | `rdst = ra * rb` |
 
 Arithmetic wraps modulo 2^64 (two's complement). Operands may be a register or
-a signed immediate. All arithmetic operates on scalars.
+a signed immediate. Operands must be integers; sub-word integers are promoted to
+64 bits for the operation, and the result has type `i64`.
 
 ### 4.3 Memory access
 
 | Instruction | Semantics |
 |-------------|-----------|
-| `rdst = LOAD [mem]` | load a 64-bit scalar from `mem` |
-| `STORE [mem], rsrc` | store the 64-bit scalar `rsrc` to `mem` |
+| `rdst = LOAD [mem]` | load a value from `mem` |
+| `STORE [mem], rsrc` | store `rsrc` to `mem` |
 
 A `mem` operand has the form:
 
@@ -91,7 +94,18 @@ A `mem` operand has the form:
 where `base` and `index` are registers, `scale` is one of `1, 2, 4, 8`, and
 `offset` is a signed immediate. The effective address is
 `base + index*scale + offset`. `base` must be a data pointer; the verifier
-proves that `[offset, offset + 8)` lies inside the allocation.
+proves that `[offset, offset + width)` lies inside the allocation.
+
+The **width and type of the access come from the pointed-to type**, so there is
+no width suffix on `LOAD`/`STORE`:
+
+- a `ptr([T; N])` array pointer yields element type `T` (width `sizeof(T)`);
+- a `ptr(Struct)` struct pointer yields the type of the field at the offset
+  (use `r.field` for field access).
+
+An integer load zero-extends (`u*`) or sign-extends (`i*`) into the 64-bit
+register; an `f32`/`f64` load targets a vector register. A store writes the low
+`width` bytes; an integer store into an integer cell truncates.
 
 ### 4.4 Arena operations
 
@@ -103,8 +117,7 @@ an arena invalidates every pointer derived from it.
 |-------------|-----------|
 | `rdst = ARENA_CREATE <tier>, <size>` | create a **fixed** arena of `size` bytes |
 | `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a **growable** arena whose chunks are `chunk` bytes |
-| `rdst = ARENA_ALLOC rsrc, <size>` | allocate `size` bytes inside arena `rsrc`; `rdst` is a data pointer |
-| `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i64` or `f64`); `rdst` is an array pointer |
+| `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`); `rdst` is an array pointer |
 | `rdst = ARENA_ALLOC rsrc, <Struct>` | allocate `sizeof(Struct)` and give `rdst` the struct type |
 | `ARENA_DESTROY rsrc` | free arena `rsrc` and invalidate its pointers |
 
@@ -196,16 +209,18 @@ decisions.
 
 ### Typed cells
 
-Memory written through a **static** offset into a locally-known allocation is
-typed: the verifier remembers the type of the value stored at each offset.
-Storing a data pointer and loading it back yields a data pointer, not an
-unknown scalar, so a pointer survives a `STORE`/`LOAD` round-trip.
+Memory is typed by the **region type**, not by ad-hoc writes:
 
-- Writing an arena handle into memory is not allowed (only scalars and data
-  pointers).
-- Dynamic-offset accesses (`[base + index*scale]`) and accesses through a
-  pointer of unknown provenance are scalar-only, since the verifier cannot name
-  the cell.
+- A `ptr(Struct)` region has one typed cell per field, at the field's offset. A
+  pointer stored in a pointer field comes back as a data pointer, so a pointer
+  survives a `STORE`/`LOAD` round-trip. Field types are a contract: a value of
+  the wrong kind (or, for a pointer field, a too-small allocation) is rejected,
+  and reading a field before writing it is rejected.
+- A `ptr([T; N])` region is homogeneous: every access yields element type `T`.
+  An integer element accepts any integer value (the store truncates); a float
+  element requires the matching float type.
+- A dynamic offset (`[base + index*scale]`) is allowed into an array pointer,
+  but not into a struct pointer (name the field instead).
 - When an arena is released, typed cells referring to it are invalidated, so a
   pointer loaded afterwards is dead.
 
@@ -235,12 +250,13 @@ The calling convention is:
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 
-Parameters are declared with a type: `scalar`, `arena` and `ptr`. A `ptr`
-parameter carries the type of the region it points to — either a named struct
-(`ptr(Struct)`, see §9) or an array of words (`ptr([T; N])`, where `T` is `i64`
-or `f64` and `N` is a positive element count). An `arena` parameter is
-**borrowed** unless prefixed with `own`, which transfers ownership to the callee
-(see §7):
+Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`; the
+alias `scalar` means `i64`), `arena`, or `ptr`. A `ptr` parameter carries the
+type of the region it points to — either a named struct (`ptr(Struct)`, see §9)
+or an array of scalar elements (`ptr([T; N])`, where `T` is `i8`…`i64`,
+`u8`…`u64`, `f32` or `f64`, and `N` is a positive element count). An `arena`
+parameter is **borrowed** unless prefixed with `own`, which transfers ownership
+to the callee (see §7):
 
 ```
 func read(r1: ptr([i64; 8])):
@@ -317,16 +333,28 @@ which case the whole program is the entry function `main`.
 
 ## 9. Structs
 
-A struct is a named layout. Every field is one 8-byte word, at consecutive
-offsets:
+A struct is a named layout. Each field is an integer of some width, an arena
+handle, or a pointer (all one word):
 
 ```
 struct Node { next: ptr(Node), val: scalar }
+struct Rec  { a: u8, b: u16, c: u32, d: u64 }
+```
+
+By default a struct is **naturally aligned**: each field is placed at an offset
+aligned to its own size, and `sizeof` is rounded up to the largest field
+alignment. A `packed struct` has no padding, and a standalone `align N`
+directive before a field forces that field's offset:
+
+```
+packed struct P { a: u8, b: u32 }     ; a@0, b@1, sizeof 5
+struct Q { a: u8, align 8, b: u8 }    ; a@0, b@8, sizeof 16
 ```
 
 - `ARENA_ALLOC r, Node` allocates `sizeof(Node)` and gives `r` the struct type.
 - `r.field` reads a field; `r.field = rsrc` writes one. Field access is
-  resolved by the verifier to a plain load/store at the field's offset.
+  resolved by the verifier to a typed load/store at the field's offset (width
+  from the field type).
 - Field types are a **contract**: writing a value of the wrong kind (or, for a
   `ptr` field, a smaller allocation) is rejected, and reading a field before it
   is written is rejected (definite initialization).
@@ -350,10 +378,10 @@ fields are stored again).
 
 ## 10. Arrays
 
-An array is a contiguous run of words. `[T; N]` denotes `N` elements of type
-`T`, where `T` is `i64` (a scalar word) or `f64`; its size is `8*N` bytes. A
-pointer to an array, `ptr([T; N])`, may be a parameter type, a return type, or a
-struct field:
+An array is a contiguous run of scalar elements. `[T; N]` denotes `N` elements
+of type `T`, where `T` is an integer (`i8`…`i64`, `u8`…`u64`) or a float (`f32`,
+`f64`); its size is `N * sizeof(T)` bytes. A pointer to an array, `ptr([T; N])`,
+may be a parameter type, a return type, or a struct field:
 
 ```
 func first(r1: ptr([i64; 4])) -> scalar:
@@ -362,18 +390,18 @@ func first(r1: ptr([i64; 4])) -> scalar:
 ```
 
 `ARENA_ALLOC r, [T; N]` allocates the array and gives `r` an array pointer. A
-load through an array pointer yields the element type — an `i64` element loads
-into a general register and an `f64` element into a vector register — and a
-store requires a value of the element type. Because every element is a full
-word, element `k` lives at offset `k*8`:
+load through an array pointer yields the element type — an integer element loads
+into a general register (zero- or sign-extended by the element's signedness) and
+a float element into a vector register — and a store writes the element width.
+Element `k` lives at offset `k * sizeof(T)`:
 
 ```
-    r2 = ARENA_ALLOC r1, [i64; 4]
-    r3 = 7
-    STORE [r2 + 16], r3      ; r2[2] = 7
-    r4 = LOAD [r2 + 16]      ; r4 = r2[2]
+    r2 = ARENA_ALLOC r1, [u8; 8]
+    r3 = 65
+    STORE [r2 + 3], r3       ; r2[3] = 65, one byte
+    r4 = LOAD [r2 + 3]       ; r4 = r2[3] = 65
 ```
 
-Array bounds are checked exactly like any other pointer: the access must lie
-within `8*N` bytes of the allocation.
+Array bounds are checked exactly like any other pointer: the access of width
+`sizeof(T)` must lie within `N * sizeof(T)` bytes of the allocation.
 

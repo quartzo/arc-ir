@@ -11,7 +11,7 @@ const loopSrc = `
 ; fill an arena
 entry:
     r1 = ARENA_CREATE CXL_POOLED, 128
-    r2 = ARENA_ALLOC r1, 128
+    r2 = ARENA_ALLOC r1, [i64; 16]
     r3 = 0
 loop:
     JGE r3, 10, done
@@ -306,6 +306,39 @@ func TestParsePtrStruct(t *testing.T) {
 	}
 }
 
+func TestStructLayout(t *testing.T) {
+	prog, err := Parse(
+		"struct P { a: u8, b: u32 }\n" +
+			"packed struct Q { a: u8, b: u32 }\n" +
+			"struct R { a: u8, align 8, b: u8 }\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	cases := []struct {
+		name string
+		size int64
+		offA int64
+		offB int64
+	}{
+		{"P", 8, 0, 4}, // natural: b aligned to 4
+		{"Q", 5, 0, 1}, // packed: no padding
+		{"R", 16, 0, 8},
+	}
+	for _, tc := range cases {
+		st := prog.Structs[tc.name]
+		if st == nil {
+			t.Fatalf("struct %s missing", tc.name)
+		}
+		if st.Size() != tc.size {
+			t.Errorf("%s: size = %d, want %d", tc.name, st.Size(), tc.size)
+		}
+		if st.Fields[0].Offset != tc.offA || st.Fields[1].Offset != tc.offB {
+			t.Errorf("%s: offsets = %d, %d, want %d, %d",
+				tc.name, st.Fields[0].Offset, st.Fields[1].Offset, tc.offA, tc.offB)
+		}
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -319,7 +352,7 @@ func TestParseErrors(t *testing.T) {
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
 		{"raw ptr rejected", "func f(r1: ptr(64)):\n    RET\n", "ptr needs a struct or array"},
 		{"raw ptr return rejected", "func f() -> ptr(64):\n    RET\n", "ptr needs a struct or array"},
-		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
+		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown type"},
 		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},

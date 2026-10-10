@@ -46,6 +46,9 @@ verification and code generation stay simple and direct.
 | — | SIMD vectors: `f32x4`/`f64x2`/`i32x4`/`i64x2` packed arithmetic (type-level) | ✅ |
 | — | Structs: named layouts, field access, definite initialization, `ptr(Struct)` params | ✅ |
 | — | Arrays: `[T; N]` regions (`ptr([T; N])`), element-typed loads/stores | ✅ |
+| — | Variable-width memory: `i8`…`i64`/`u8`…`u64` scalars, typed 1/2/4/8-byte loads/stores | ✅ |
+| — | Struct layout: natural alignment, `packed struct`, per-field `align N` | ✅ |
+| — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
 
 ## Layout
 
@@ -86,15 +89,15 @@ saved to its stack slot around a call and restored afterwards.
 |-------------|---------|
 | `rdst = <imm>` / `rdst = rsrc` | load immediate / copy |
 | `rdst = ARENA_CREATE <tier>, <size>` | create an arena |
-| `rdst = ARENA_ALLOC rsrc, <size>` | allocate inside an arena |
+| `rdst = ARENA_ALLOC rsrc, <[T; N] | Struct>` | allocate a typed region inside an arena |
 | `ARENA_DESTROY rsrc` | free an arena and invalidate its pointers |
-| `rdst = LOAD [mem]` | read a scalar |
-| `STORE [mem], rsrc` | write a scalar |
+| `rdst = LOAD [mem]` | read a value (width from the pointed-to type) |
+| `STORE [mem], rsrc` | write a value (width from the pointed-to type) |
 | `rdst = ADD rsrc, (<reg> | <imm>)` | also `SUB`, `MUL` |
-| `PRINT rsrc` | print a scalar |
+| `PRINT rsrc` | print an integer |
 | `RET rsrc` | return (becomes the process exit code) |
 | `JMP label` | unconditional jump |
-| `J<cc> ra, (<reg> | <imm>), label` | conditional jump: `JEQ`, `JNE`, `JLT`, `JLE`, `JGT`, `JGE` |
+| `J<cc> ra, (<reg> | <imm>), label` | conditional jump: `JEQ`, `JNE`, `JLT`, `JLE`, `JGT`, `JGE` (signed) and `JLTU`, `JLEU`, `JGTU`, `JGEU` (unsigned) |
 | `CALL name` | call function `name`; result in `r0` |
 | `RET rsrc` | return from the current function (or the process, for `main`) |
 | `label:` | basic-block label |
@@ -108,7 +111,7 @@ Complete example (`examples/loop.arc`):
 ```arc
 entry:
     r1 = ARENA_CREATE CXL_POOLED, 128
-    r2 = ARENA_ALLOC r1, 128
+    r2 = ARENA_ALLOC r1, [i64; 16]
     r3 = 0
 loop:
     JGE r3, 10, done
@@ -152,14 +155,14 @@ rec:
     RET r0
 ```
 
-Parameters are typed: `scalar`, `arena`, and `ptr(...)` (a data pointer to a
-region — a struct `ptr(Struct)` or an array `ptr([T; N])`). The verifier checks
-each function independently against its parameter types, and at every call site
-checks argument types and that a pointer argument is at least as large as
-declared. Functions may recurse.
+Parameters are typed: an integer (`i8`…`i64`, `u8`…`u64`; `scalar` = `i64`),
+`arena`, or `ptr(...)` (a data pointer to a region — a struct `ptr(Struct)` or an
+array `ptr([T; N])`). The verifier checks each function independently against its
+parameter types, and at every call site checks argument types and that a pointer
+argument is at least as large as declared. Functions may recurse.
 
 A function may also declare a return type with `->` (`arena` or `ptr(...)`; the
-default is `scalar`). The verifier checks the value returned at each `RET`
+default is `i64`). The verifier checks the value returned at each `RET`
 against that type and gives the caller's `r0` the declared type.
 
 ## Ownership
@@ -207,28 +210,29 @@ flexibility and tiered growth; both are memory-safe.
 
 ## Typed memory
 
-Memory written through a **static** offset into a locally-known allocation is
-typed: the verifier records the type of each cell. Storing a data pointer and
-loading it back yields a data pointer, so pointers survive a `STORE`/`LOAD`
-round-trip (`examples/typed_mem.arc`). Writing an arena handle into memory is
-rejected, and dynamic-offset or foreign accesses are scalar-only. Releasing an
-arena invalidates typed cells referring to it.
+Memory is typed by the **region type**: a `ptr(Struct)` region has one typed cell
+per field (a pointer stored in a pointer field survives a `STORE`/`LOAD`
+round-trip), and a `ptr([T; N])` region is homogeneous (every access yields `T`).
+Releasing an arena invalidates typed cells referring to it.
 
 ## Arrays and structs
 
-An **array** is a contiguous run of words, written `[T; N]` with `T` either
-`i64` or `f64`. `ARENA_ALLOC r, [T; N]` allocates it and gives `r` an array
-pointer; a load through that pointer yields the element type (an `i64` element
-loads into a general register, an `f64` element into a vector register) and a
-store requires a value of the element type (`examples/ptr.arc`).
+An **array** is a contiguous run of scalar elements, written `[T; N]` with `T`
+an integer (`i8`…`i64`, `u8`…`u64`) or a float (`f32`, `f64`). `ARENA_ALLOC r,
+[T; N]` allocates it and gives `r` an array pointer; a load through that pointer
+yields the element type — an integer element loads into a general register
+(zero/sign-extended by its signedness), a float element into a vector register —
+and a store writes the element width (`examples/typed_mem.arc`).
 
-A **struct** is a named layout of 8-byte fields (`struct Node { next: ptr(Node),
-val: scalar }`). `ARENA_ALLOC r, Node` allocates it; `r.field` reads a field and
-`r.field = rsrc` writes one. Field types are a contract — a wrong type or a
-too-small pointer is rejected — and reading a field before writing it is
-rejected (definite initialization). A layout travels across a call in a
-`ptr(Struct)` parameter, so the callee can read and write fields
-(`examples/struct.arc`, `examples/ptr_struct.arc`).
+A **struct** is a named layout (`struct Rec { a: u8, b: u16, c: u32, d: u64 }`).
+By default fields are naturally aligned; `packed struct` removes padding and a
+standalone `align N` forces a field's offset. `ARENA_ALLOC r, Node` allocates it;
+`r.field` reads a field and `r.field = rsrc` writes one, with the access width
+taken from the field type. Field types are a contract — a wrong type or a
+too-small pointer is rejected — and reading a field before writing it is rejected
+(definite initialization). A layout travels across a call in a `ptr(Struct)`
+parameter, so the callee can read and write fields (`examples/struct.arc`,
+`examples/ptr_struct.arc`).
 
 ## The Verifier
 

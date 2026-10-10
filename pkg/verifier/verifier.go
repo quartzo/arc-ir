@@ -37,8 +37,17 @@ type RegType int
 const (
 	// TypeUnknown is the zero value (uninitialized, or conflicting at a merge).
 	TypeUnknown RegType = iota
-	// TypeScalar is a 64-bit integer with an associated range.
-	TypeScalar
+	// TypeI64 is a signed 64-bit integer (the default scalar type).
+	TypeI64
+	// TypeI8, TypeI16, TypeI32 are signed sub-word integers.
+	TypeI8
+	TypeI16
+	TypeI32
+	// TypeU8, TypeU16, TypeU32, TypeU64 are unsigned integers.
+	TypeU8
+	TypeU16
+	TypeU32
+	TypeU64
 	// TypeF32 is a 32-bit float (in a vector register).
 	TypeF32
 	// TypeF64 is a 64-bit float (in a vector register).
@@ -60,8 +69,22 @@ const (
 // String returns a human-readable type name.
 func (t RegType) String() string {
 	switch t {
-	case TypeScalar:
-		return "scalar"
+	case TypeI64:
+		return "i64"
+	case TypeI8:
+		return "i8"
+	case TypeI16:
+		return "i16"
+	case TypeI32:
+		return "i32"
+	case TypeU8:
+		return "u8"
+	case TypeU16:
+		return "u16"
+	case TypeU32:
+		return "u32"
+	case TypeU64:
+		return "u64"
 	case TypeF32:
 		return "f32"
 	case TypeF64:
@@ -83,23 +106,105 @@ func (t RegType) String() string {
 	}
 }
 
+// isInt reports whether t is an integer type.
+func isInt(t RegType) bool {
+	switch t {
+	case TypeI8, TypeI16, TypeI32, TypeI64, TypeU8, TypeU16, TypeU32, TypeU64:
+		return true
+	}
+	return false
+}
+
+// isFloat reports whether t is a scalar float type.
+func isFloat(t RegType) bool { return t == TypeF32 || t == TypeF64 }
+
+// width returns the access width of a scalar type in bytes.
+func width(t RegType) int64 {
+	switch t {
+	case TypeI8, TypeU8:
+		return 1
+	case TypeI16, TypeU16:
+		return 2
+	case TypeI32, TypeU32, TypeF32:
+		return 4
+	default:
+		return 8
+	}
+}
+
+// isSigned reports whether an integer type is signed.
+func isSigned(t RegType) bool {
+	switch t {
+	case TypeI8, TypeI16, TypeI32, TypeI64:
+		return true
+	}
+	return false
+}
+
+// scalarRegType maps an IR scalar kind to its abstract register type.
+func scalarRegType(k ir.ScalarKind) RegType {
+	switch k {
+	case ir.I8:
+		return TypeI8
+	case ir.I16:
+		return TypeI16
+	case ir.I32:
+		return TypeI32
+	case ir.U8:
+		return TypeU8
+	case ir.U16:
+		return TypeU16
+	case ir.U32:
+		return TypeU32
+	case ir.U64:
+		return TypeU64
+	case ir.F32:
+		return TypeF32
+	case ir.F64:
+		return TypeF64
+	default:
+		return TypeI64
+	}
+}
+
+// intRange returns the value range of an integer type. For u64 the range is the
+// whole signed domain, which is exactly the set of 64-bit patterns (sound).
+func intRange(t RegType) (int64, int64) {
+	switch t {
+	case TypeI8:
+		return -128, 127
+	case TypeI16:
+		return -32768, 32767
+	case TypeI32:
+		return math.MinInt32, math.MaxInt32
+	case TypeU8:
+		return 0, 255
+	case TypeU16:
+		return 0, 65535
+	case TypeU32:
+		return 0, math.MaxUint32
+	default:
+		return math.MinInt64, math.MaxInt64
+	}
+}
+
 // RegState is the abstract state of one register or memory cell.
 type RegState struct {
 	Defined   bool
 	Type      RegType
-	Min, Max  int64       // scalar range
-	RefID     int         // arena identity for arena handles and data pointers (-1 = none)
-	AllocID   int         // allocation identity for data pointers (-1 = unknown)
-	Owned     bool        // this function holds the reference and must release it
-	Foreign   bool        // data pointer whose arena provenance is unknown (from a call)
-	Growable  bool        // arena handle: extensible (AllocSize is the chunk size)
-	Struct    string      // data pointer: struct type name, if any
-	Elem      ir.ElemKind // data pointer: array element type (when Count > 0)
-	Count     int64       // data pointer: array element count
-	AllocSize int64       // reachable bytes (arena capacity/chunk, or allocation size)
-	Init      bool        // memory cell: has been written
-	Declared  bool        // memory cell: seeded from a struct field (type is a contract)
-	Destroyed bool        // owning arena destroyed / reference released
+	Min, Max  int64         // scalar range
+	RefID     int           // arena identity for arena handles and data pointers (-1 = none)
+	AllocID   int           // allocation identity for data pointers (-1 = unknown)
+	Owned     bool          // this function holds the reference and must release it
+	Foreign   bool          // data pointer whose arena provenance is unknown (from a call)
+	Growable  bool          // arena handle: extensible (AllocSize is the chunk size)
+	Struct    string        // data pointer: struct type name, if any
+	Elem      ir.ScalarKind // data pointer: array element type (when Count > 0)
+	Count     int64         // data pointer: array element count
+	AllocSize int64         // reachable bytes (arena capacity/chunk, or allocation size)
+	Init      bool          // memory cell: has been written
+	Declared  bool          // memory cell: seeded from a struct field (type is a contract)
+	Destroyed bool          // owning arena destroyed / reference released
 }
 
 // MemKey identifies a memory cell: an allocation and a byte offset.
@@ -276,7 +381,9 @@ func (v *Verifier) entryState() (State, error) {
 	for _, p := range v.f.Params {
 		switch p.Kind {
 		case ir.KindScalar:
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
+			t := scalarRegType(p.Scalar)
+			lo, hi := intRange(t)
+			st.Regs[p.Reg] = RegState{Defined: true, Type: t, RefID: -1, AllocID: -1, Min: lo, Max: hi}
 		case ir.KindArena:
 			// Capacity is unknown unless declared as arena(<size>); allocations
 			// are then bounds-checked and capacity-checked. A parameter is
@@ -297,8 +404,8 @@ func (v *Verifier) entryState() (State, error) {
 				}
 				for i := range sf.Fields {
 					f := &sf.Fields[i]
-					st.setCell(alloc, int64(i)*8, RegState{
-						Type:      fieldRegType(f.Type),
+					st.setCell(alloc, f.Offset, RegState{
+						Type:      fieldRegType(f),
 						RefID:     -1,
 						AllocID:   -1,
 						AllocSize: f.Size,
@@ -338,9 +445,14 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			return out, nil
 
 		case inst.Op.IsCondJump():
-			if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
+			rs, err := v.scalar(st, inst.Src[0], inst)
+			if err != nil {
 				return nil, err
 			}
+			// Lower a signed comparison to its unsigned form when the operand
+			// type is unsigned, so codegen emits the right condition code.
+			inst = unsignedCompare(inst, rs.Type)
+			b.Instrs[ii] = inst
 			taken := refine(*st, inst, true)
 			mergeEdge(out, v.f.Index[inst.Label], taken)
 			*st = refine(*st, inst, false)
@@ -350,12 +462,15 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			if err != nil {
 				return nil, err
 			}
-			if resolved.Op != inst.Op {
-				b.Instrs[ii] = resolved
+			if resolved.Op == ir.OpLoad || resolved.Op == ir.OpStore {
+				if err := v.annotateWidth(st, &resolved); err != nil {
+					return nil, err
+				}
 			}
 			if err := v.apply(resolved, st, v.refOf[[2]int{bi, ii}], v.allocOf[[2]int{bi, ii}]); err != nil {
 				return nil, err
 			}
+			b.Instrs[ii] = resolved
 		}
 	}
 
@@ -425,7 +540,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			st.Regs[inst.Dst] = *src
 			return nil
 		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: inst.Imm, Max: inst.Imm}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeI64, RefID: -1, AllocID: -1, Min: inst.Imm, Max: inst.Imm}
 		return nil
 
 	case ir.OpArenaCreate:
@@ -475,8 +590,8 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			}
 			for i := range sf.Fields {
 				f := &sf.Fields[i]
-				st.setCell(alloc, int64(i)*8, RegState{
-					Type:      fieldRegType(f.Type),
+				st.setCell(alloc, f.Offset, RegState{
+					Type:      fieldRegType(f),
 					RefID:     -1,
 					AllocID:   -1,
 					AllocSize: f.Size,
@@ -511,38 +626,35 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if err != nil {
 			return err
 		}
-		if err := v.checkBounds(st, ptr, inst.Mem, inst); err != nil {
+		rt, _, err := v.accessType(st, ptr, inst.Mem, inst)
+		if err != nil {
 			return err
 		}
-		if ptr.Count > 0 {
-			if ptr.Elem == ir.ElemF64 {
-				if !inst.Dst.IsVec() {
-					return v.errf(inst, "loading an f64 element requires a vector register")
-				}
-				st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
-			} else {
-				if !inst.Dst.IsGP() {
-					return v.errf(inst, "loading an i64 element requires a general register")
-				}
-				st.Regs[inst.Dst] = unknownScalar()
+		if err := v.checkBounds(st, ptr, inst.Mem, inst.Width, inst); err != nil {
+			return err
+		}
+		if isFloat(rt) {
+			if !inst.Dst.IsVec() {
+				return v.errf(inst, "loading %s requires a vector register", rt)
 			}
+			st.Regs[inst.Dst] = RegState{Defined: true, Type: rt, RefID: -1, AllocID: -1}
 			return nil
 		}
 		if !inst.Dst.IsGP() {
-			return v.errf(inst, "LOAD requires a general register destination")
+			return v.errf(inst, "loading %s requires a general register", rt)
 		}
-		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
-			st.Regs[inst.Dst] = unknownScalar()
-			return nil
-		}
-		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok {
-			if cell.Declared && !cell.Init {
-				return v.errf(inst, "field at offset %d is not initialized", inst.Mem.Offset)
+		// A declared struct cell keeps the exact stored type (and value).
+		if ptr.Count == 0 {
+			if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok {
+				if cell.Declared && !cell.Init {
+					return v.errf(inst, "field at offset %d is not initialized", inst.Mem.Offset)
+				}
+				st.Regs[inst.Dst] = loadFromCell(cell)
+				return nil
 			}
-			st.Regs[inst.Dst] = loadFromCell(cell)
-			return nil
 		}
-		st.Regs[inst.Dst] = unknownScalar()
+		lo, hi := intRange(rt)
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: rt, RefID: -1, AllocID: -1, Min: lo, Max: hi}
 		return nil
 
 	case ir.OpStore:
@@ -550,73 +662,68 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if err != nil {
 			return err
 		}
-		if err := v.checkBounds(st, ptr, inst.Mem, inst); err != nil {
-			return err
-		}
 		src, err := v.defined(st, inst.Src[0], inst)
 		if err != nil {
 			return err
 		}
+		rt, _, err := v.accessType(st, ptr, inst.Mem, inst)
+		if err != nil {
+			return err
+		}
+		if err := v.checkBounds(st, ptr, inst.Mem, inst.Width, inst); err != nil {
+			return err
+		}
 		if ptr.Count > 0 {
-			want := elemRegType(ptr.Elem)
-			if src.Type != want {
-				return v.errf(inst, "array element expects %s, got %s", want, src.Type)
-			}
-			if ptr.Elem == ir.ElemF64 {
-				if !inst.Src[0].IsVec() {
-					return v.errf(inst, "storing an f64 element requires a vector register")
+			// Array element: a float element needs the matching float type; an
+			// integer element accepts any integer (the store truncates).
+			if isFloat(rt) {
+				if src.Type != rt {
+					return v.errf(inst, "array element expects %s, got %s", rt, src.Type)
 				}
-			} else if !inst.Src[0].IsGP() {
-				return v.errf(inst, "storing an i64 element requires a general register")
+				if !inst.Src[0].IsVec() {
+					return v.errf(inst, "storing %s requires a vector register", rt)
+				}
+			} else {
+				if !isInt(src.Type) {
+					return v.errf(inst, "array element expects an integer, got %s", src.Type)
+				}
+				if !inst.Src[0].IsGP() {
+					return v.errf(inst, "storing an integer requires a general register")
+				}
 			}
 			return nil
 		}
-		// Only static offsets into a locally-known allocation are typed.
-		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
-			if src.Type != TypeScalar {
-				return v.errf(inst, "only scalars may be stored at a dynamic or foreign offset")
-			}
-			return nil
+		// Struct: the field's declared cell (tracking initialization) or, for a
+		// foreign pointer, the field type from the layout.
+		var cell RegState
+		if c, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && c.Declared {
+			cell = c
+		} else if f := structFieldAt(v.mod, ptr.Struct, inst.Mem.Offset); f != nil {
+			cell = fieldCell(f)
+		} else {
+			return v.errf(inst, "no field at offset %d in %s", inst.Mem.Offset, ptr.Struct)
 		}
-		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && cell.Declared {
-			if err := v.fieldCompatible(cell, src, inst); err != nil {
-				return err
-			}
-			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
-				Type:      cell.Type,
-				RefID:     src.RefID,
-				AllocID:   src.AllocID,
-				AllocSize: cell.AllocSize,
-				Struct:    cell.Struct,
-				Elem:      cell.Elem,
-				Count:     cell.Count,
-				Declared:  true,
-				Init:      true,
-				Destroyed: src.Destroyed,
-			})
-			return nil
+		if err := v.fieldCompatible(cell, src, inst); err != nil {
+			return err
 		}
-		switch src.Type {
-		case TypeScalar:
-			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{Type: TypeScalar, RefID: -1, AllocID: -1, Init: true})
-		case TypeDataPtr:
-			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
-				Type:      TypeDataPtr,
-				RefID:     src.RefID,
-				AllocID:   src.AllocID,
-				AllocSize: src.AllocSize,
-				Struct:    src.Struct,
-				Elem:      src.Elem,
-				Count:     src.Count,
-				Init:      true,
-				Destroyed: src.Destroyed,
-			})
-		default:
-			return v.errf(inst, "cannot store a value of type %s in memory", src.Type)
-		}
+		st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
+			Type:      cell.Type,
+			RefID:     src.RefID,
+			AllocID:   src.AllocID,
+			AllocSize: cell.AllocSize,
+			Struct:    cell.Struct,
+			Elem:      cell.Elem,
+			Count:     cell.Count,
+			Declared:  true,
+			Init:      true,
+			Destroyed: src.Destroyed,
+		})
 		return nil
 
 	case ir.OpAdd, ir.OpSub, ir.OpMul:
+		if !inst.Dst.IsGP() {
+			return v.errf(inst, "an integer result requires a general register")
+		}
 		a, err := v.scalar(st, inst.Src[0], inst)
 		if err != nil {
 			return err
@@ -626,7 +733,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			return err
 		}
 		min, max := combine(inst.Op, a.Min, a.Max, bMin, bMax)
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: min, Max: max}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeI64, RefID: -1, AllocID: -1, Min: min, Max: max}
 		return nil
 
 	case ir.OpFConst:
@@ -706,14 +813,19 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			if err != nil {
 				return err
 			}
-			want := map[ir.ValKind]RegType{
-				ir.KindScalar: TypeScalar,
-				ir.KindArena:  TypeArena,
-				ir.KindPtr:    TypeDataPtr,
-			}[p.Kind]
-			if rs.Type != want {
-				return v.errf(inst, "argument %s to %s: expected %s, got %s",
-					p.Reg, callee.Name, want, rs.Type)
+			switch p.Kind {
+			case ir.KindScalar:
+				if !isInt(rs.Type) {
+					return v.errf(inst, "argument %s to %s: expected an integer, got %s", p.Reg, callee.Name, rs.Type)
+				}
+			case ir.KindArena:
+				if rs.Type != TypeArena {
+					return v.errf(inst, "argument %s to %s: expected arena, got %s", p.Reg, callee.Name, rs.Type)
+				}
+			case ir.KindPtr:
+				if rs.Type != TypeDataPtr {
+					return v.errf(inst, "argument %s to %s: expected a data pointer, got %s", p.Reg, callee.Name, rs.Type)
+				}
 			}
 			switch p.Kind {
 			case ir.KindPtr:
@@ -724,10 +836,11 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 					if rs.AllocID >= 0 {
 						sf := v.mod.Structs[p.Struct]
 						for i := range sf.Fields {
-							cell, ok := st.getCell(rs.AllocID, int64(i)*8)
+							f := &sf.Fields[i]
+							cell, ok := st.getCell(rs.AllocID, f.Offset)
 							if !ok || !cell.Init {
 								return v.errf(inst, "argument %s to %s: field %s is not initialized",
-									p.Reg, callee.Name, sf.Fields[i].Name)
+									p.Reg, callee.Name, f.Name)
 							}
 						}
 					}
@@ -761,7 +874,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		case ir.KindPtr:
 			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount}
 		default:
-			st.Regs[0] = unknownScalar()
+			t := scalarRegType(callee.RetScalar)
+			lo, hi := intRange(t)
+			st.Regs[0] = RegState{Defined: true, Type: t, RefID: -1, AllocID: -1, Min: lo, Max: hi}
 		}
 		return nil
 
@@ -774,7 +889,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 }
 
 func unknownScalar() RegState {
-	return RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
+	return RegState{Defined: true, Type: TypeI64, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
 }
 
 // rhsRange returns the range of the second operand (register or immediate).
@@ -810,14 +925,14 @@ func combine(op ir.OpCode, aMin, aMax, bMin, bMax int64) (int64, int64) {
 func refine(st State, inst ir.Instruction, taken bool) State {
 	reg := inst.Src[0]
 	rs := st.Regs[reg]
-	if !rs.Defined || rs.Type != TypeScalar {
+	if !rs.Defined || !isInt(rs.Type) {
 		return st
 	}
 	_, imm, isReg := inst.RHS()
 	var bMin, bMax int64
 	if isReg {
 		bs := st.Regs[inst.Src[1]]
-		if !bs.Defined || bs.Type != TypeScalar {
+		if !bs.Defined || !isInt(bs.Type) {
 			return st
 		}
 		bMin, bMax = bs.Min, bs.Max
@@ -834,25 +949,25 @@ func refine(st State, inst ir.Instruction, taken bool) State {
 		if !taken {
 			rs = intersect(rs, bMin, bMax)
 		}
-	case ir.OpJlt: // a < b
+	case ir.OpJlt, ir.OpJltu: // a < b
 		if taken {
 			rs.Max = min64(rs.Max, satSub(bMax, 1))
 		} else {
 			rs.Min = max64(rs.Min, bMin)
 		}
-	case ir.OpJle: // a <= b
+	case ir.OpJle, ir.OpJleu: // a <= b
 		if taken {
 			rs.Max = min64(rs.Max, bMax)
 		} else {
 			rs.Min = max64(rs.Min, satAdd(bMin, 1))
 		}
-	case ir.OpJgt: // a > b
+	case ir.OpJgt, ir.OpJgtu: // a > b
 		if taken {
 			rs.Min = max64(rs.Min, satAdd(bMin, 1))
 		} else {
 			rs.Max = min64(rs.Max, bMax)
 		}
-	case ir.OpJge: // a >= b
+	case ir.OpJge, ir.OpJgeu: // a >= b
 		if taken {
 			rs.Min = max64(rs.Min, bMin)
 		} else {
@@ -863,14 +978,37 @@ func refine(st State, inst ir.Instruction, taken bool) State {
 	return st
 }
 
+// unsignedCompare rewrites a signed comparison to its unsigned form when the
+// operand type is unsigned.
+func unsignedCompare(inst ir.Instruction, t RegType) ir.Instruction {
+	if isSigned(t) {
+		return inst
+	}
+	switch inst.Op {
+	case ir.OpJlt:
+		inst.Op = ir.OpJltu
+	case ir.OpJle:
+		inst.Op = ir.OpJleu
+	case ir.OpJgt:
+		inst.Op = ir.OpJgtu
+	case ir.OpJge:
+		inst.Op = ir.OpJgeu
+	}
+	return inst
+}
+
 func intersect(rs RegState, lo, hi int64) RegState {
 	rs.Min = max64(rs.Min, lo)
 	rs.Max = min64(rs.Max, hi)
 	return rs
 }
 
-// checkBounds proves that an access through mem stays within ptr's allocation.
-func (v *Verifier) checkBounds(st *State, ptr *RegState, mem ir.Mem, inst ir.Instruction) error {
+// checkBounds proves that an access of width w through mem stays within ptr's
+// allocation.
+func (v *Verifier) checkBounds(st *State, ptr *RegState, mem ir.Mem, w int64, inst ir.Instruction) error {
+	if w <= 0 {
+		w = 1
+	}
 	var lo, hi int64
 	if mem.Index.Valid() {
 		idx, err := v.scalar(st, mem.Index, inst)
@@ -886,10 +1024,10 @@ func (v *Verifier) checkBounds(st *State, ptr *RegState, mem ir.Mem, inst ir.Ins
 	if lo < 0 {
 		return v.errf(inst, "out-of-bounds: access %s reaches offset %d (below 0)", mem, lo)
 	}
-	if hi > ptr.AllocSize-ir.AccessSize {
+	if hi > ptr.AllocSize-w {
 		return v.errf(inst,
 			"out-of-bounds: access %s may reach offset %d, exceeding allocation of %d bytes",
-			mem, satAdd(hi, ir.AccessSize), ptr.AllocSize)
+			mem, satAdd(hi, w), ptr.AllocSize)
 	}
 	return nil
 }
@@ -910,8 +1048,8 @@ func (v *Verifier) scalar(st *State, r ir.Register, inst ir.Instruction) (*RegSt
 	if err != nil {
 		return nil, err
 	}
-	if rs.Type != TypeScalar {
-		return nil, v.errf(inst, "expected scalar in %s, got %s", r, rs.Type)
+	if !isInt(rs.Type) {
+		return nil, v.errf(inst, "expected integer in %s, got %s", r, rs.Type)
 	}
 	return rs, nil
 }
@@ -951,14 +1089,14 @@ func (v *Verifier) vecOf(st *State, r ir.Register, want RegType, inst ir.Instruc
 	return rs, nil
 }
 
-func fieldRegType(k ir.ValKind) RegType {
-	switch k {
+func fieldRegType(f *ir.Field) RegType {
+	switch f.Type {
 	case ir.KindArena:
 		return TypeArena
 	case ir.KindPtr:
 		return TypeDataPtr
 	default:
-		return TypeScalar
+		return scalarRegType(f.Scalar)
 	}
 }
 
@@ -974,26 +1112,99 @@ func loadFromCell(cell RegState) RegState {
 		Count:     cell.Count,
 		Destroyed: cell.Destroyed,
 	}
-	if cell.Type == TypeScalar {
-		out.Min, out.Max = math.MinInt64, math.MaxInt64
+	if isInt(cell.Type) {
+		out.Min, out.Max = intRange(cell.Type)
 	}
 	return out
 }
 
-func elemRegType(k ir.ElemKind) RegType {
-	if k == ir.ElemF64 {
-		return TypeF64
+func (v *Verifier) fieldCompatible(cell RegState, src *RegState, inst ir.Instruction) error {
+	switch {
+	case cell.Type == TypeDataPtr:
+		if src.Type != TypeDataPtr {
+			return v.errf(inst, "field expects a data pointer, got %s", src.Type)
+		}
+		if src.AllocSize < cell.AllocSize {
+			return v.errf(inst, "field expects at least %d bytes, got a %d-byte allocation", cell.AllocSize, src.AllocSize)
+		}
+	case cell.Type == TypeArena:
+		if src.Type != TypeArena {
+			return v.errf(inst, "field expects an arena, got %s", src.Type)
+		}
+	case isInt(cell.Type):
+		if !isInt(src.Type) {
+			return v.errf(inst, "field expects an integer, got %s", src.Type)
+		}
+	default: // float
+		if src.Type != cell.Type {
+			return v.errf(inst, "field expects %s, got %s", cell.Type, src.Type)
+		}
 	}
-	return TypeScalar
+	return nil
 }
 
-func (v *Verifier) fieldCompatible(cell RegState, src *RegState, inst ir.Instruction) error {
-	if cell.Type != src.Type {
-		return v.errf(inst, "field expects %s, got %s", cell.Type, src.Type)
+// structFieldAt returns the field of the named struct whose offset is off.
+func structFieldAt(mod *ir.Module, name string, off int64) *ir.Field {
+	sf := mod.Structs[name]
+	if sf == nil {
+		return nil
 	}
-	if cell.Type == TypeDataPtr && src.AllocSize < cell.AllocSize {
-		return v.errf(inst, "field expects ptr(%d), got a %d-byte allocation", cell.AllocSize, src.AllocSize)
+	for i := range sf.Fields {
+		if sf.Fields[i].Offset == off {
+			return &sf.Fields[i]
+		}
 	}
+	return nil
+}
+
+// fieldCell builds the abstract cell for a struct field.
+func fieldCell(f *ir.Field) RegState {
+	return RegState{
+		Type:      fieldRegType(f),
+		RefID:     -1,
+		AllocID:   -1,
+		AllocSize: f.Size,
+		Struct:    f.Struct,
+		Elem:      f.Elem,
+		Count:     f.Count,
+		Declared:  true,
+	}
+}
+
+// accessType returns the abstract type and byte width of an access through ptr.
+func (v *Verifier) accessType(st *State, ptr *RegState, mem ir.Mem, inst ir.Instruction) (RegType, int64, error) {
+	if ptr.Count > 0 {
+		rt := scalarRegType(ptr.Elem)
+		return rt, ptr.Elem.Size(), nil
+	}
+	if ptr.Struct != "" {
+		if mem.Index.Valid() {
+			return 0, 0, v.errf(inst, "a dynamic offset into a struct pointer is not allowed; use a field")
+		}
+		if cell, ok := st.getCell(ptr.AllocID, mem.Offset); ok {
+			return cell.Type, width(cell.Type), nil
+		}
+		if f := structFieldAt(v.mod, ptr.Struct, mem.Offset); f != nil {
+			return fieldRegType(f), f.Width(), nil
+		}
+		return 0, 0, v.errf(inst, "no field at offset %d in %s", mem.Offset, ptr.Struct)
+	}
+	return 0, 0, v.errf(inst, "pointer has no type; cannot determine the access width")
+}
+
+// annotateWidth records the access width and signedness on a load/store so the
+// code generator can emit the right instruction.
+func (v *Verifier) annotateWidth(st *State, inst *ir.Instruction) error {
+	ptr, err := v.dataPtr(st, inst.Mem.Base, *inst)
+	if err != nil {
+		return err
+	}
+	rt, w, err := v.accessType(st, ptr, inst.Mem, *inst)
+	if err != nil {
+		return err
+	}
+	inst.Width = w
+	inst.Signed = isSigned(rt)
 	return nil
 }
 
@@ -1096,22 +1307,26 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 		if rs.Destroyed {
 			return v.errf(inst, "returning %s, which is no longer live", inst.Src[0])
 		}
-		want := map[ir.ValKind]RegType{
-			ir.KindScalar: TypeScalar,
-			ir.KindArena:  TypeArena,
-			ir.KindPtr:    TypeDataPtr,
-		}[v.f.RetKind]
-		if rs.Type != want {
-			return v.errf(inst, "returning %s, but function %s declares return type %s",
-				rs.Type, v.f.Name, v.f.RetKind)
-		}
 		switch v.f.RetKind {
+		case ir.KindScalar:
+			if !isInt(rs.Type) {
+				return v.errf(inst, "returning %s, but function %s declares return type %s",
+					rs.Type, v.f.Name, v.f.RetScalar)
+			}
 		case ir.KindArena:
+			if rs.Type != TypeArena {
+				return v.errf(inst, "returning %s, but function %s declares return type %s",
+					rs.Type, v.f.Name, v.f.RetKind)
+			}
 			if !rs.Owned {
 				return v.errf(inst, "function %s cannot return borrowed arena %s", v.f.Name, inst.Src[0])
 			}
 			returnedRef = rs.RefID
 		case ir.KindPtr:
+			if rs.Type != TypeDataPtr {
+				return v.errf(inst, "returning %s, but function %s declares return type %s",
+					rs.Type, v.f.Name, v.f.RetKind)
+			}
 			if v.f.RetStruct != "" && rs.Struct != v.f.RetStruct {
 				return v.errf(inst, "function %s must return a %s pointer", v.f.Name, v.f.RetStruct)
 			}

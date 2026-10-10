@@ -2,7 +2,7 @@
 ; parameter declared ptr([i64; 8]).
 func main:
     r5 = ARENA_CREATE DRAM_LOCAL, 64
-    r2 = ARENA_ALLOC r5, 16
+    r2 = ARENA_ALLOC r5, [i64; 2]
     r1 = r2
     CALL read
     RET r0

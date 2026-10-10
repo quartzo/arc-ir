@@ -16,9 +16,10 @@ type Function struct {
 	Name      string
 	Params    []Param
 	RetKind   ValKind
+	RetScalar ScalarKind
 	RetSize   int64
 	RetStruct string
-	RetElem   ElemKind
+	RetElem   ScalarKind
 	RetCount  int64
 	Blocks    []*Block
 	Index     map[string]int // local label -> block index
@@ -54,7 +55,7 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, instrs: r.instrs}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -96,9 +97,10 @@ type rawFunc struct {
 	name      string
 	params    []Param
 	retKind   ValKind
+	retScalar ScalarKind
 	retSize   int64
 	retStruct string
-	retElem   ElemKind
+	retElem   ScalarKind
 	retCount  int64
 	instrs    []Instruction
 }
@@ -114,6 +116,7 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 				name:      inst.Label,
 				params:    inst.Params,
 				retKind:   inst.RetKind,
+				retScalar: inst.RetScalar,
 				retSize:   inst.RetSize,
 				retStruct: inst.RetStruct,
 				retElem:   inst.RetElem,

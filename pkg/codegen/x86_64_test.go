@@ -33,7 +33,7 @@ func buildAsm(t *testing.T, src string) string {
 const loopSrc = `
 entry:
     r1 = ARENA_CREATE CXL_POOLED, 128
-    r2 = ARENA_ALLOC r1, 128
+    r2 = ARENA_ALLOC r1, [i64; 16]
     r3 = 0
 loop:
     JGE r3, 10, done
@@ -108,7 +108,7 @@ func TestCompileAndRun(t *testing.T) {
 			"rec:\n    r2 = SUB r1, 1\n    r3 = r1\n    r1 = r2\n    CALL fact\n" +
 			"    r4 = MUL r3, r0\n    r0 = r4\n    RET r0\n", "120"},
 		{"ptr", "func main:\n" +
-			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, 64\n" +
+			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
 			"    r3 = 42\n    STORE [r2], r3\n    r1 = r2\n    CALL read\n" +
 			"    PRINT r0\n    ARENA_DESTROY r5\n    RET r0\n" +
 			"func read(r1: ptr([i64; 8])):\n    r0 = LOAD [r1]\n    RET r0\n", "42"},
@@ -117,14 +117,18 @@ func TestCompileAndRun(t *testing.T) {
 			"    r3 = 99\n    STORE [r2], r3\n    r4 = LOAD [r2]\n    PRINT r4\n" +
 			"    ARENA_DESTROY r1\n    RET r4\n" +
 			"func get_arena() -> arena:\n    r0 = ARENA_CREATE DRAM_LOCAL, 64\n    RET r0\n" +
-			"func make(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, 64\n    RET r0\n", "99"},
-		{"typed_mem", "func main:\n" +
-			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n" +
-			"    r3 = ARENA_ALLOC r1, 8\n    r4 = 99\n    STORE [r3], r4\n    STORE [r2], r3\n" +
-			"    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    PRINT r6\n    ARENA_DESTROY r1\n    RET r6\n", "99"},
+			"func make(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, [i64; 8]\n    RET r0\n", "99"},
+		{"typed_mem", "struct Rec { a: u8, b: u16, c: u32, d: u64 }\n" +
+			"func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, Rec\n" +
+			"    r3 = 200\n    r2.a = r3\n    r4 = 40000\n    r2.b = r4\n" +
+			"    r5 = 3000000000\n    r2.c = r5\n    r6 = 123456789\n    r2.d = r6\n" +
+			"    r7 = r2.a\n    PRINT r7\n    r8 = r2.b\n    PRINT r8\n" +
+			"    r9 = r2.c\n    PRINT r9\n    r10 = r2.d\n    PRINT r10\n" +
+			"    ARENA_DESTROY r1\n    RET r7\n", "200\n40000\n3000000000\n123456789"},
 		{"growable", "func main:\n" +
-			"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, 64\n" +
-			"    r3 = ARENA_ALLOC r1, 64\n    r4 = 77\n    STORE [r3], r4\n    r5 = LOAD [r3]\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+			"    r3 = ARENA_ALLOC r1, [i64; 8]\n    r4 = 77\n    STORE [r3], r4\n    r5 = LOAD [r3]\n" +
 			"    PRINT r5\n    ARENA_DESTROY r1\n    RET r5\n", "77"},
 		{"float", "func main:\n" +
 			"    v1 = 2.5\n    v2 = 4.0\n    v3 = FMUL v1, v2\n    v4 = FADD v3, v1\n" +
@@ -141,14 +145,14 @@ func TestCompileAndRun(t *testing.T) {
 		{"struct", "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
 			"func main:\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, Node\n" +
-			"    r3 = ARENA_ALLOC r1, 8\n    r4 = 42\n    STORE [r3], r4\n" +
+			"    r3 = ARENA_ALLOC r1, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +
 			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r6 = r2.next\n" +
 			"    r7 = LOAD [r6]\n    PRINT r7\n    r8 = r2.val\n    PRINT r8\n" +
 			"    ARENA_DESTROY r1\n    RET r7\n", "42\n7"},
 		{"ptr_struct", "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
 			"func main:\n" +
 			"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r9, Node\n" +
-			"    r3 = ARENA_ALLOC r9, 8\n    r4 = 42\n    STORE [r3], r4\n" +
+			"    r3 = ARENA_ALLOC r9, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +
 			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r1 = r2\n    CALL read\n" +
 			"    PRINT r0\n    ARENA_DESTROY r9\n    RET r0\n" +
 			"func read(r1: ptr(Node)):\n    r2 = r1.next\n    r0 = LOAD [r2]\n    RET r0\n", "42"},
@@ -161,6 +165,27 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n    r2 = ARENA_ALLOC r1, [f64; 4]\n" +
 			"    v1 = 1.5\n    STORE [r2 + 8], v1\n    v2 = LOAD [r2 + 8]\n" +
 			"    PRINTF v2\n    ARENA_DESTROY r1\n    RET\n", "1.5"},
+		{"bytes", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [u8; 8]\n" +
+			"    r3 = 65\n    STORE [r2], r3\n    r4 = 66\n    STORE [r2 + 1], r4\n" +
+			"    r5 = LOAD [r2]\n    PRINT r5\n    r6 = LOAD [r2 + 1]\n    PRINT r6\n" +
+			"    ARENA_DESTROY r1\n    RET r5\n", "65\n66"},
+		{"u16_i8", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [u16; 2]\n" +
+			"    r3 = 50000\n    STORE [r2], r3\n    r4 = LOAD [r2]\n    PRINT r4\n" +
+			"    r5 = ARENA_ALLOC r1, [i8; 1]\n    r6 = -5\n    STORE [r5], r6\n" +
+			"    r7 = LOAD [r5]\n    PRINT r7\n" +
+			"    ARENA_DESTROY r1\n    RET r4\n", "50000\n-5"},
+		{"unsigned_cmp", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [u8; 2]\n" +
+			"    r3 = 200\n    STORE [r2], r3\n    r4 = LOAD [r2]\n" +
+			"    r0 = 0\n    JGT r4, 100, big\n    r0 = 1\n" +
+			"big:\n    PRINT r0\n    ARENA_DESTROY r1\n    RET r0\n", "0"},
+		{"packed", "packed struct P { a: u8, b: u32 }\n" +
+			"func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, P\n" +
+			"    r3 = 9\n    r2.a = r3\n    r4 = 123456\n    r2.b = r4\n" +
+			"    r5 = r2.b\n    PRINT r5\n    ARENA_DESTROY r1\n    RET r5\n", "123456"},
 	}
 
 	for _, tc := range cases {

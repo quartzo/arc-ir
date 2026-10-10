@@ -3,8 +3,8 @@
 ; (the runtime would otherwise abort).
 func main:
     r1 = ARENA_CREATE DRAM_LOCAL, 128
-    r2 = ARENA_ALLOC r1, 64
-    r3 = ARENA_ALLOC r1, 64
-    r4 = ARENA_ALLOC r1, 64
+    r2 = ARENA_ALLOC r1, [i64; 8]
+    r3 = ARENA_ALLOC r1, [i64; 8]
+    r4 = ARENA_ALLOC r1, [i64; 8]
     ARENA_DESTROY r1
     RET

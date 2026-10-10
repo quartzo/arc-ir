@@ -15,7 +15,7 @@ cannot cause undefined behavior:
 - no use of an uninitialized register,
 - no allocation that exceeds an arena's declared capacity (cumulative, across
   the whole program, including through function calls),
-- no type misuse (loading through a scalar, storing an arena handle in memory,
+- no type misuse (loading through an integer, storing an arena handle in memory,
   transferring a borrowed arena as owned, ...).
 
 The guarantee is **whole-program**: it holds across function calls, because
@@ -50,12 +50,13 @@ contract; completeness is best-effort.
 
 The verifier is an abstract interpreter over the control-flow graph. Per
 program point it tracks, for each of the 16 registers, an abstract value:
-scalar with a signed range, arena handle (with reference identity, capacity and
-ownership), or data pointer (with arena, allocation identity and size). It
-also tracks the type of statically-addressed memory cells and the bytes
-allocated so far from each arena. States flow along edges and merge at joins (a
-conservative union). Conditional jumps refine scalar ranges on each edge.
-Arenas are linear references: ownership is tracked and transfers are explicit.
+an integer (with a signed range and width), arena handle (with reference
+identity, capacity and ownership), or data pointer (with arena, allocation
+identity and size). It also tracks the type of statically-addressed memory cells
+and the bytes allocated so far from each arena. States flow along edges and merge
+at joins (a conservative union). Conditional jumps refine integer ranges on each
+edge. Arenas are linear references: ownership is tracked and transfers are
+explicit.
 
 ## Non-goals / known threats
 

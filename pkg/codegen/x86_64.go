@@ -276,17 +276,43 @@ func (x *x64) inst(inst ir.Instruction) error {
 
 	case ir.OpLoad:
 		addr := x.memOperand(inst.Mem)
-		if x.physOf[inst.Dst] != "" {
-			x.line("\tmovq %s, %s", addr, x.physOf[inst.Dst])
+		if inst.Dst.IsVec() {
+			mnem := "movsd"
+			if inst.Width == 4 {
+				mnem = "movss"
+			}
+			if phys := x.physOf[inst.Dst]; phys != "" {
+				x.line("\t%s %s, %s", mnem, addr, phys)
+			} else {
+				x.line("\t%s %s, %s", mnem, addr, xmmScratch1)
+				x.store(xmmScratch1, inst.Dst)
+			}
+			return nil
+		}
+		mnem := intLoadMnem(inst.Width, inst.Signed)
+		if phys := x.physOf[inst.Dst]; phys != "" {
+			x.line("\t%s %s, %s", mnem, addr, loadDst(phys, inst.Width, inst.Signed))
 		} else {
-			x.line("\tmovq %s, %s", addr, scratch3)
+			x.line("\t%s %s, %s", mnem, addr, loadDst(scratch3, inst.Width, inst.Signed))
 			x.store(scratch3, inst.Dst)
 		}
 
 	case ir.OpStore:
-		src := x.load(inst.Src[0], scratch3)
 		addr := x.memOperand(inst.Mem)
-		x.line("\tmovq %s, %s", src, addr)
+		if inst.Src[0].IsVec() {
+			mnem := "movsd"
+			if inst.Width == 4 {
+				mnem = "movss"
+			}
+			src := x.loadF(inst.Src[0], xmmScratch1)
+			x.line("\t%s %s, %s", mnem, src, addr)
+			return nil
+		}
+		src := x.load(inst.Src[0], scratch3)
+		if inst.Width < 8 {
+			src = subReg(src, inst.Width)
+		}
+		x.line("\t%s %s, %s", intStoreMnem(inst.Width), src, addr)
 
 	case ir.OpAdd, ir.OpSub, ir.OpMul:
 		a := x.load(inst.Src[0], scratch1)
@@ -576,8 +602,96 @@ func jccMnemonic(op ir.OpCode) string {
 		return "jg"
 	case ir.OpJge:
 		return "jge"
+	case ir.OpJltu:
+		return "jb"
+	case ir.OpJleu:
+		return "jbe"
+	case ir.OpJgtu:
+		return "ja"
+	case ir.OpJgeu:
+		return "jae"
 	}
 	return "jmp"
+}
+
+// intLoadMnem returns the load mnemonic that reads w bytes and extends the
+// result to 64 bits.
+func intLoadMnem(w int64, signed bool) string {
+	switch w {
+	case 1:
+		if signed {
+			return "movsbq"
+		}
+		return "movzbq"
+	case 2:
+		if signed {
+			return "movswq"
+		}
+		return "movzwq"
+	case 4:
+		if signed {
+			return "movslq"
+		}
+		return "movl" // a 32-bit load zero-extends into the 64-bit register
+	}
+	return "movq"
+}
+
+// loadDst returns the destination register name for a load. A 4-byte unsigned
+// load targets the 32-bit sub-register (zero-extending); every other extending
+// load targets a 64-bit register.
+func loadDst(reg string, w int64, signed bool) string {
+	if w == 4 && !signed {
+		return subReg(reg, 4)
+	}
+	return reg
+}
+
+// intStoreMnem returns the store mnemonic for a w-byte store.
+func intStoreMnem(w int64) string {
+	switch w {
+	case 1:
+		return "movb"
+	case 2:
+		return "movw"
+	case 4:
+		return "movl"
+	}
+	return "movq"
+}
+
+var subRegNames = map[string][3]string{
+	"%rax": {"%al", "%ax", "%eax"},
+	"%rbx": {"%bl", "%bx", "%ebx"},
+	"%rcx": {"%cl", "%cx", "%ecx"},
+	"%rdx": {"%dl", "%dx", "%edx"},
+	"%rsi": {"%sil", "%si", "%esi"},
+	"%rdi": {"%dil", "%di", "%edi"},
+	"%r8":  {"%r8b", "%r8w", "%r8d"},
+	"%r9":  {"%r9b", "%r9w", "%r9d"},
+	"%r10": {"%r10b", "%r10w", "%r10d"},
+	"%r11": {"%r11b", "%r11w", "%r11d"},
+	"%r12": {"%r12b", "%r12w", "%r12d"},
+	"%r13": {"%r13b", "%r13w", "%r13d"},
+	"%r14": {"%r14b", "%r14w", "%r14d"},
+	"%r15": {"%r15b", "%r15w", "%r15d"},
+}
+
+// subReg maps a 64-bit register name to its w-byte sub-register (w in 1, 2, 4).
+func subReg(reg string, w int64) string {
+	names, ok := subRegNames[reg]
+	if !ok {
+		return reg
+	}
+	switch w {
+	case 1:
+		return names[0]
+	case 2:
+		return names[1]
+	case 4:
+		return names[2]
+	}
+	return reg
 }
 
 func sanitize(label string) string {

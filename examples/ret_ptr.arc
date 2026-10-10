@@ -16,5 +16,5 @@ func get_arena() -> arena:
     RET r0
 
 func make(r1: arena) -> ptr([i64; 8]):
-    r0 = ARENA_ALLOC r1, 64
+    r0 = ARENA_ALLOC r1, [i64; 8]
     RET r0

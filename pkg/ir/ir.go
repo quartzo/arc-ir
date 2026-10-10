@@ -135,38 +135,80 @@ func ParseVecKind(s string) (VecKind, bool) {
 	return VecF32x4, false
 }
 
-// ElemKind is the element type of an array region.
-type ElemKind int
+// ScalarKind is an integer or float scalar type. Integer types carry a width
+// (1, 2, 4 or 8 bytes) and a signedness, which together select the machine
+// load/store and comparison instructions.
+type ScalarKind int
 
 const (
-	// ElemI64 is an 8-byte integer element.
-	ElemI64 ElemKind = iota
-	// ElemF64 is an 8-byte float element.
-	ElemF64
+	// I64 is the default scalar type (the zero value), an alias for "scalar".
+	I64 ScalarKind = iota
+	I8
+	I16
+	I32
+	U8
+	U16
+	U32
+	U64
+	F32
+	F64
 )
 
-var elemNames = map[ElemKind]string{
-	ElemI64: "i64",
-	ElemF64: "f64",
+var scalarNames = map[ScalarKind]string{
+	I8: "i8", I16: "i16", I32: "i32", I64: "i64",
+	U8: "u8", U16: "u16", U32: "u32", U64: "u64",
+	F32: "f32", F64: "f64",
 }
 
-// String returns the textual name of the element kind.
-func (k ElemKind) String() string {
-	if n, ok := elemNames[k]; ok {
+// String returns the textual name of the scalar kind.
+func (k ScalarKind) String() string {
+	if n, ok := scalarNames[k]; ok {
 		return n
 	}
-	return "elem(?)"
+	return "scalar(?)"
 }
 
-// ParseElemKind resolves a textual element kind.
-func ParseElemKind(s string) (ElemKind, bool) {
-	for k, n := range elemNames {
+// ParseScalarKind resolves a textual scalar type. "scalar" is an alias for i64.
+func ParseScalarKind(s string) (ScalarKind, bool) {
+	if s == "scalar" {
+		return I64, true
+	}
+	for k, n := range scalarNames {
 		if n == s {
 			return k, true
 		}
 	}
-	return ElemI64, false
+	return I64, false
 }
+
+// Size returns the width of the scalar in bytes.
+func (k ScalarKind) Size() int64 {
+	switch k {
+	case I8, U8:
+		return 1
+	case I16, U16:
+		return 2
+	case I32, U32, F32:
+		return 4
+	default:
+		return 8
+	}
+}
+
+// Signed reports whether the integer type is signed. Floats return false.
+func (k ScalarKind) Signed() bool {
+	switch k {
+	case I8, I16, I32, I64:
+		return true
+	}
+	return false
+}
+
+// Float reports whether the type is a floating-point type.
+func (k ScalarKind) Float() bool { return k == F32 || k == F64 }
+
+// IsInt reports whether the type is an integer (not a float).
+func (k ScalarKind) IsInt() bool { return !k.Float() }
 
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
@@ -175,10 +217,11 @@ func ParseElemKind(s string) (ElemKind, bool) {
 type Param struct {
 	Reg    Register
 	Kind   ValKind
-	Size   int64
-	Struct string   // ptr(Struct): the struct layout the pointer refers to
-	Elem   ElemKind // ptr([Elem; Count]): the array element type
-	Count  int64    // ptr([Elem; Count]): the element count
+	Scalar ScalarKind // KindScalar: the integer/float type
+	Size   int64      // KindPtr: pointed-to region size in bytes
+	Struct string     // KindPtr: ptr(Struct)
+	Elem   ScalarKind // KindPtr: ptr([Elem; Count])
+	Count  int64      // KindPtr: ptr([Elem; Count])
 	Own    bool
 }
 
@@ -226,13 +269,17 @@ const (
 	OpRet          // RET rsrc
 	OpCall         // CALL name
 
-	OpJmp // JMP label
-	OpJeq // JEQ ra, (rb | imm), label
-	OpJne // JNE ra, (rb | imm), label
-	OpJlt // JLT ra, (rb | imm), label
-	OpJle // JLE ra, (rb | imm), label
-	OpJgt // JGT ra, (rb | imm), label
-	OpJge // JGE ra, (rb | imm), label
+	OpJmp  // JMP label
+	OpJeq  // JEQ ra, (rb | imm), label
+	OpJne  // JNE ra, (rb | imm), label
+	OpJlt  // JLT ra, (rb | imm), label   (signed)
+	OpJle  // JLE ra, (rb | imm), label   (signed)
+	OpJgt  // JGT ra, (rb | imm), label   (signed)
+	OpJge  // JGE ra, (rb | imm), label   (signed)
+	OpJltu // JLTU ra, (rb | imm), label  (unsigned)
+	OpJleu // JLEU ra, (rb | imm), label  (unsigned)
+	OpJgtu // JGTU ra, (rb | imm), label  (unsigned)
+	OpJgeu // JGEU ra, (rb | imm), label  (unsigned)
 )
 
 var opNames = map[OpCode]string{
@@ -281,6 +328,10 @@ var opNames = map[OpCode]string{
 	OpJle:          "JLE",
 	OpJgt:          "JGT",
 	OpJge:          "JGE",
+	OpJltu:         "JLTU",
+	OpJleu:         "JLEU",
+	OpJgtu:         "JGTU",
+	OpJgeu:         "JGEU",
 }
 
 // String returns the mnemonic of the opcode.
@@ -304,7 +355,7 @@ func OpFromName(name string) (OpCode, bool) {
 // IsCondJump reports whether the opcode is a conditional jump.
 func (o OpCode) IsCondJump() bool {
 	switch o {
-	case OpJeq, OpJne, OpJlt, OpJle, OpJgt, OpJge:
+	case OpJeq, OpJne, OpJlt, OpJle, OpJgt, OpJge, OpJltu, OpJleu, OpJgtu, OpJgeu:
 		return true
 	default:
 		return false
@@ -384,20 +435,26 @@ type Instruction struct {
 	Label    string
 	Tier     TopologyTier
 	Size     int64
-	Growable bool     // OpArenaCreate: extensible arena; Size is the chunk size
-	Struct   string   // OpArenaAlloc: struct type name
-	Elem     ElemKind // OpArenaAlloc: array element type (when Count > 0)
-	Count    int64    // OpArenaAlloc: array element count
-	Field    string   // OpField / OpFieldStore: field name
+	Growable bool       // OpArenaCreate: extensible arena; Size is the chunk size
+	Struct   string     // OpArenaAlloc: struct type name
+	Elem     ScalarKind // OpArenaAlloc: array element type (when Count > 0)
+	Count    int64      // OpArenaAlloc: array element count
+	Field    string     // OpField / OpFieldStore: field name
+
+	// Width and Signed describe a LOAD/STORE access; the verifier fills them
+	// from the type at the access (1, 2, 4 or 8 bytes).
+	Width  int64
+	Signed bool
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
 	// RetKind/RetSize hold a function's declared return type (OpFunc only).
 	// The zero value (KindScalar, 0) means a scalar return.
 	RetKind   ValKind
+	RetScalar ScalarKind
 	RetSize   int64
 	RetStruct string
-	RetElem   ElemKind
+	RetElem   ScalarKind
 	RetCount  int64
 
 	// Line is the 1-based source line, attached by the parser.
@@ -423,7 +480,7 @@ func (i Instruction) String() string {
 	case OpLabel:
 		return i.Label + ":"
 	case OpFunc:
-		return fmt.Sprintf("func %s(%s)%s:", i.Label, formatParams(i.Params), formatRet(i.RetKind, i.RetSize))
+		return fmt.Sprintf("func %s(%s)%s:", i.Label, formatParams(i.Params), formatRet(i))
 	case OpCall:
 		return fmt.Sprintf("CALL %s", i.Label)
 	case OpMov:
@@ -437,7 +494,14 @@ func (i Instruction) String() string {
 		}
 		return fmt.Sprintf("%sARENA_CREATE %s, %d", dst, i.Tier, i.Size)
 	case OpArenaAlloc:
-		return fmt.Sprintf("%sARENA_ALLOC %s, %d", dst, i.Src[0], i.Size)
+		switch {
+		case i.Struct != "":
+			return fmt.Sprintf("%sARENA_ALLOC %s, %s", dst, i.Src[0], i.Struct)
+		case i.Count > 0:
+			return fmt.Sprintf("%sARENA_ALLOC %s, [%s; %d]", dst, i.Src[0], i.Elem, i.Count)
+		default:
+			return fmt.Sprintf("%sARENA_ALLOC %s, %d", dst, i.Src[0], i.Size)
+		}
 	case OpArenaDestroy:
 		return fmt.Sprintf("ARENA_DESTROY %s", i.Src[0])
 	case OpLoad:
@@ -494,66 +558,149 @@ type Program struct {
 	Structs map[string]*Struct
 }
 
-// Field is one member of a struct. Every field is one 8-byte word, or a
-// pointer to a struct or array.
+// Field is one member of a struct: an integer/float scalar, an arena handle, or
+// a pointer to a struct or array.
 type Field struct {
 	Name   string
 	Type   ValKind
-	Size   int64    // for ptr fields: total bytes
-	Struct string   // ptr(Struct)
-	Elem   ElemKind // ptr([Elem; Count])
+	Scalar ScalarKind // Type == KindScalar
+	Size   int64      // Type == KindPtr: pointed-to region size in bytes
+	Struct string     // Type == KindPtr: ptr(Struct)
+	Elem   ScalarKind // Type == KindPtr: ptr([Elem; Count])
 	Count  int64
+	Align  int64 // explicit alignment (0 = natural)
+	Offset int64 // computed layout offset
 }
 
-// Struct is a named layout: fields at consecutive 8-byte offsets.
+// Width returns the field's own size in bytes within the struct.
+func (f *Field) Width() int64 {
+	if f.Type == KindScalar {
+		return f.Scalar.Size()
+	}
+	return 8 // arena handle or data pointer
+}
+
+// Alignment returns the field's alignment in bytes: the explicit override if
+// set, otherwise the natural alignment (the scalar width, or 8 for a pointer).
+func (f *Field) Alignment() int64 {
+	if f.Align > 0 {
+		return f.Align
+	}
+	if f.Type == KindScalar {
+		return f.Scalar.Size()
+	}
+	return 8
+}
+
+// Struct is a named layout of fields at computed byte offsets.
 type Struct struct {
 	Name   string
+	Packed bool
 	Fields []Field
+
+	size int64
 }
 
-// Size returns the struct size in bytes.
-func (s *Struct) Size() int64 { return int64(len(s.Fields)) * 8 }
+// Size returns the struct size in bytes (valid after Layout).
+func (s *Struct) Size() int64 { return s.size }
+
+// Layout assigns each field an offset and computes the struct size. Natural
+// alignment (the default) pads each field to its own alignment; a packed struct
+// has no padding. An explicit per-field align overrides both.
+func (s *Struct) Layout() {
+	var off, maxAlign int64 = 0, 1
+	for i := range s.Fields {
+		f := &s.Fields[i]
+		al := int64(1)
+		switch {
+		case f.Align > 0:
+			al = f.Align
+		case !s.Packed:
+			al = f.Alignment()
+		}
+		off = roundUp(off, al)
+		f.Offset = off
+		off += f.Width()
+		if al > maxAlign {
+			maxAlign = al
+		}
+	}
+	if !s.Packed {
+		off = roundUp(off, maxAlign)
+	}
+	s.size = off
+}
 
 // Offset returns the byte offset of a named field, or -1 if absent.
 func (s *Struct) Offset(name string) (int64, *Field) {
 	for i := range s.Fields {
 		if s.Fields[i].Name == name {
-			return int64(i) * 8, &s.Fields[i]
+			return s.Fields[i].Offset, &s.Fields[i]
 		}
 	}
 	return -1, nil
 }
 
+func roundUp(v, a int64) int64 {
+	if a <= 1 {
+		return v
+	}
+	return (v + a - 1) / a * a
+}
+
 func formatParams(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
-		prefix := ""
-		if p.Own {
-			prefix = "own "
-		}
-		typ := formatType(p.Kind, p.Size)
-		if p.Kind == KindPtr && p.Count > 0 {
-			typ = fmt.Sprintf("ptr([%s; %d])", p.Elem, p.Count)
-		} else if p.Kind == KindPtr && p.Struct != "" {
-			typ = "ptr(" + p.Struct + ")"
-		}
-		parts[i] = fmt.Sprintf("%s: %s%s", p.Reg, prefix, typ)
+		parts[i] = formatParam(p)
 	}
 	return strings.Join(parts, ", ")
 }
 
-func formatType(kind ValKind, size int64) string {
-	if kind == KindPtr {
-		return fmt.Sprintf("ptr(%d)", size)
+func formatParam(p Param) string {
+	prefix := ""
+	if p.Own {
+		prefix = "own "
 	}
-	return kind.String()
+	return fmt.Sprintf("%s: %s%s", p.Reg, prefix, formatParamType(p))
 }
 
-func formatRet(kind ValKind, size int64) string {
-	if kind == KindScalar {
+func formatParamType(p Param) string {
+	switch p.Kind {
+	case KindPtr:
+		switch {
+		case p.Count > 0:
+			return fmt.Sprintf("ptr([%s; %d])", p.Elem, p.Count)
+		case p.Struct != "":
+			return "ptr(" + p.Struct + ")"
+		default:
+			return fmt.Sprintf("ptr(%d)", p.Size)
+		}
+	case KindArena:
+		if p.Size > 0 {
+			return fmt.Sprintf("arena(%d)", p.Size)
+		}
+		return "arena"
+	default:
+		return p.Scalar.String()
+	}
+}
+
+func formatRet(i Instruction) string {
+	if i.RetKind == KindScalar && i.RetScalar == I64 {
 		return ""
 	}
-	return " -> " + formatType(kind, size)
+	switch i.RetKind {
+	case KindPtr:
+		p := Param{Kind: KindPtr, Size: i.RetSize, Struct: i.RetStruct, Elem: i.RetElem, Count: i.RetCount}
+		return " -> " + formatParamType(p)
+	case KindArena:
+		if i.RetSize > 0 {
+			return fmt.Sprintf(" -> arena(%d)", i.RetSize)
+		}
+		return " -> arena"
+	default:
+		return " -> " + i.RetScalar.String()
+	}
 }
 
 func formatLanes(i Instruction) string {

@@ -60,6 +60,17 @@ alternatives are recorded so the choices are visible and revisitable.
   pointers.
 - Tagged values / fat pointers — runtime cost and size overhead.
 
+### Memory width
+
+- **(chosen) Type-driven access width** — the pointed-to type names the width
+  (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`), so `LOAD`/`STORE` carry no width
+  suffix and there is no untyped memory to guess at. An integer load extends to
+  64 bits by its signedness; a store writes the low bytes.
+- Explicit width mnemonics (`LOAD8`, `STORE16`, ...) — more surface, and every
+  access must restate a width the type already implies.
+- Byte-granular addressing only (e.g. `[u8; N]` buffers) — forces byte-at-a-time
+  access and loses the element type.
+
 ### Control-flow verification
 
 - **(chosen) Fixpoint with conservative merge** — one state per program point.

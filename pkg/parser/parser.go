@@ -5,7 +5,7 @@
 //
 //	entry:
 //	    r1 = ARENA_CREATE DRAM_LOCAL, 4096
-//	    r2 = ARENA_ALLOC r1, 128
+//	    r2 = ARENA_ALLOC r1, [i64; 16]
 //	    r3 = 0
 //	loop:
 //	    JGE r3, 10, exit
@@ -41,7 +41,7 @@ func Parse(src string) (*ir.Program, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		if toks[0] == "struct" {
+		if toks[0] == "struct" || (toks[0] == "packed" && len(toks) > 1 && toks[1] == "struct") {
 			if err := parseStruct(prog, toks, lineNo); err != nil {
 				return nil, err
 			}
@@ -54,7 +54,12 @@ func Parse(src string) (*ir.Program, error) {
 		prog.Instrs = append(prog.Instrs, inst)
 	}
 
-	// Resolve struct-typed allocations and parameters to a byte size.
+	// Lay out every struct (offsets and size), then resolve pointer targets to
+	// a byte size. Layout does not depend on the pointed-to sizes (a pointer is
+	// always one word), so the order is safe even for self-referential structs.
+	for _, st := range prog.Structs {
+		st.Layout()
+	}
 	for i := range prog.Instrs {
 		in := &prog.Instrs[i]
 		if in.Op == ir.OpArenaAlloc && in.Struct != "" {
@@ -84,8 +89,7 @@ func Parse(src string) (*ir.Program, error) {
 			}
 		}
 	}
-	// Resolve struct-pointer fields to the size of the pointed-to struct. A
-	// pointer is one word, so this never recurses into the struct's own size.
+	// Resolve struct-pointer fields to the size of the pointed-to struct.
 	for _, st := range prog.Structs {
 		for i := range st.Fields {
 			f := &st.Fields[i]
@@ -101,10 +105,17 @@ func Parse(src string) (*ir.Program, error) {
 	return prog, nil
 }
 
-// parseStruct parses "struct Name { field: type, ... }".
+// parseStruct parses "struct Name { field: type, ... }" or
+// "packed struct Name { ... }". A standalone "align N" directive before a field
+// forces that field's offset.
 func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 	c := &cursor{toks: toks, line: lineNo}
-	c.pos = 1 // skip "struct"
+	packed := false
+	if c.peek() == "packed" {
+		packed = true
+		c.pos++
+	}
+	c.pos++ // skip "struct"
 	name, err := c.next()
 	if err != nil {
 		return err
@@ -115,8 +126,25 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 	if err := c.expect("{"); err != nil {
 		return err
 	}
-	st := &ir.Struct{Name: name}
+	st := &ir.Struct{Name: name, Packed: packed}
+	var pendingAlign int64
 	for c.peek() != "}" {
+		if c.peek() == "align" {
+			c.pos++
+			a, err := parseImm(c, lineNo)
+			if err != nil {
+				return err
+			}
+			if a <= 0 {
+				return fmt.Errorf("line %d: align must be positive, got %d", lineNo, a)
+			}
+			pendingAlign = a
+			if c.peek() == "," {
+				c.pos++
+				continue
+			}
+			break
+		}
 		fname, err := c.next()
 		if err != nil {
 			return err
@@ -127,34 +155,21 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 		if err := c.expect(":"); err != nil {
 			return err
 		}
-		kindTok, err := c.next()
+		spec, err := parseTypeSpec(c, lineNo)
 		if err != nil {
 			return err
 		}
-		kind, ok := ir.ParseValKind(kindTok)
-		if !ok {
-			return fmt.Errorf("line %d: unknown field type %q", lineNo, kindTok)
+		f := ir.Field{
+			Name:   fname,
+			Type:   spec.kind,
+			Scalar: spec.scalar,
+			Size:   spec.size,
+			Struct: spec.structName,
+			Elem:   spec.elem,
+			Count:  spec.count,
+			Align:  pendingAlign,
 		}
-		f := ir.Field{Name: fname, Type: kind}
-		switch kind {
-		case ir.KindPtr:
-			f.Struct, f.Elem, f.Count, f.Size, err = parsePtrTarget(c, lineNo)
-			if err != nil {
-				return err
-			}
-		case ir.KindArena:
-			if c.peek() == "(" {
-				c.pos++
-				sz, err := parseImm(c, lineNo)
-				if err != nil {
-					return err
-				}
-				if err := c.expect(")"); err != nil {
-					return err
-				}
-				f.Size = sz
-			}
-		}
+		pendingAlign = 0
 		st.Fields = append(st.Fields, f)
 		if c.peek() == "," {
 			c.pos++
@@ -173,6 +188,51 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 	}
 	prog.Structs[name] = st
 	return nil
+}
+
+// typeSpec is a parsed type: a scalar, an arena, or a pointer target.
+type typeSpec struct {
+	kind       ir.ValKind
+	scalar     ir.ScalarKind
+	structName string
+	elem       ir.ScalarKind
+	count      int64
+	size       int64
+}
+
+// parseTypeSpec parses a type: a scalar kind (i8..u64, f32, f64, or the alias
+// "scalar"), "arena" / "arena(size)", or "ptr(Struct|[Elem; Count])".
+func parseTypeSpec(c *cursor, lineNo int) (typeSpec, error) {
+	tok, err := c.next()
+	if err != nil {
+		return typeSpec{}, err
+	}
+	if sk, ok := ir.ParseScalarKind(tok); ok {
+		return typeSpec{kind: ir.KindScalar, scalar: sk}, nil
+	}
+	switch tok {
+	case "arena":
+		spec := typeSpec{kind: ir.KindArena}
+		if c.peek() == "(" {
+			c.pos++
+			sz, err := parseImm(c, lineNo)
+			if err != nil {
+				return typeSpec{}, err
+			}
+			if err := c.expect(")"); err != nil {
+				return typeSpec{}, err
+			}
+			spec.size = sz
+		}
+		return spec, nil
+	case "ptr":
+		structName, elem, count, size, err := parsePtrTarget(c, lineNo)
+		if err != nil {
+			return typeSpec{}, err
+		}
+		return typeSpec{kind: ir.KindPtr, structName: structName, elem: elem, count: count, size: size}, nil
+	}
+	return typeSpec{}, fmt.Errorf("line %d: unknown type %q", lineNo, tok)
 }
 
 // splitField splits "rbase.field" into its register and field name.
@@ -465,36 +525,25 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 				own = true
 				c.pos++
 			}
-			kindTok, err := c.next()
+			spec, err := parseTypeSpec(c, lineNo)
 			if err != nil {
 				return ir.Instruction{}, err
 			}
-			kind, ok := ir.ParseValKind(kindTok)
-			if !ok {
-				return ir.Instruction{}, fmt.Errorf("line %d: unknown parameter type %q", lineNo, kindTok)
-			}
-			if own && kind != ir.KindArena {
+			if own && spec.kind != ir.KindArena {
 				return ir.Instruction{}, fmt.Errorf("line %d: 'own' is only valid for arena parameters", lineNo)
 			}
-			param := ir.Param{Reg: reg, Kind: kind, Own: own}
-			switch kind {
-			case ir.KindPtr:
-				param.Struct, param.Elem, param.Count, param.Size, err = parsePtrTarget(c, lineNo)
-				if err != nil {
-					return ir.Instruction{}, err
-				}
-			case ir.KindArena:
-				if c.peek() == "(" {
-					c.pos++
-					size, err := parseImm(c, lineNo)
-					if err != nil {
-						return ir.Instruction{}, err
-					}
-					if err := c.expect(")"); err != nil {
-						return ir.Instruction{}, err
-					}
-					param.Size = size
-				}
+			if spec.kind == ir.KindScalar && spec.scalar.Float() {
+				return ir.Instruction{}, fmt.Errorf("line %d: float parameters are not supported (pass a ptr instead)", lineNo)
+			}
+			param := ir.Param{
+				Reg:    reg,
+				Kind:   spec.kind,
+				Scalar: spec.scalar,
+				Size:   spec.size,
+				Struct: spec.structName,
+				Elem:   spec.elem,
+				Count:  spec.count,
+				Own:    own,
 			}
 			inst.Params = append(inst.Params, param)
 			if c.peek() == "," {
@@ -507,37 +556,22 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			return ir.Instruction{}, err
 		}
 	}
-	// Optional return type: "-> kind" or "-> ptr(Struct|[T; N])".
+	// Optional return type: "-> type".
 	if c.peek() == "-" && c.peekAt(1) == ">" {
 		c.pos += 2
-		kindTok, err := c.next()
+		spec, err := parseTypeSpec(c, lineNo)
 		if err != nil {
 			return ir.Instruction{}, err
 		}
-		kind, ok := ir.ParseValKind(kindTok)
-		if !ok {
-			return ir.Instruction{}, fmt.Errorf("line %d: unknown return type %q", lineNo, kindTok)
+		if spec.kind == ir.KindScalar && spec.scalar.Float() {
+			return ir.Instruction{}, fmt.Errorf("line %d: float return types are not supported", lineNo)
 		}
-		inst.RetKind = kind
-		switch kind {
-		case ir.KindPtr:
-			inst.RetStruct, inst.RetElem, inst.RetCount, inst.RetSize, err = parsePtrTarget(c, lineNo)
-			if err != nil {
-				return ir.Instruction{}, err
-			}
-		case ir.KindArena:
-			if c.peek() == "(" {
-				c.pos++
-				size, err := parseImm(c, lineNo)
-				if err != nil {
-					return ir.Instruction{}, err
-				}
-				if err := c.expect(")"); err != nil {
-					return ir.Instruction{}, err
-				}
-				inst.RetSize = size
-			}
-		}
+		inst.RetKind = spec.kind
+		inst.RetScalar = spec.scalar
+		inst.RetStruct = spec.structName
+		inst.RetElem = spec.elem
+		inst.RetCount = spec.count
+		inst.RetSize = spec.size
 	}
 
 	if err := c.expect(":"); err != nil {
@@ -620,7 +654,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			}
 			inst.Elem = elem
 			inst.Count = count
-			inst.Size = 8 * count
+			inst.Size = elem.Size() * count
 		case isIdent(c.peek()):
 			name, err := c.next()
 			if err != nil {
@@ -628,11 +662,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			}
 			inst.Struct = name // Size is resolved in Parse
 		default:
-			size, err := parseImm(c, lineNo)
-			if err != nil {
-				return inst, err
-			}
-			inst.Size = size
+			return inst, fmt.Errorf("line %d: ARENA_ALLOC needs a type: [Elem; Count] or a struct", lineNo)
 		}
 
 	case ir.OpArenaDestroy, ir.OpPrint, ir.OpRet:
@@ -988,7 +1018,7 @@ func parseLanes(c *cursor, k ir.VecKind, lineNo int) ([]int64, error) {
 }
 
 // parseArray parses "[Elem; Count]".
-func parseArray(c *cursor, lineNo int) (ir.ElemKind, int64, error) {
+func parseArray(c *cursor, lineNo int) (ir.ScalarKind, int64, error) {
 	if err := c.expect("["); err != nil {
 		return 0, 0, err
 	}
@@ -996,9 +1026,9 @@ func parseArray(c *cursor, lineNo int) (ir.ElemKind, int64, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	elem, ok := ir.ParseElemKind(elemTok)
+	elem, ok := ir.ParseScalarKind(elemTok)
 	if !ok {
-		return 0, 0, fmt.Errorf("line %d: unknown element type %q (want i64 or f64)", lineNo, elemTok)
+		return 0, 0, fmt.Errorf("line %d: unknown element type %q", lineNo, elemTok)
 	}
 	if err := c.expect(";"); err != nil {
 		return 0, 0, err
@@ -1018,13 +1048,16 @@ func parseArray(c *cursor, lineNo int) (ir.ElemKind, int64, error) {
 
 // parsePtrTarget parses the parenthesised target of a pointer: a struct name or
 // an array type.
-func parsePtrTarget(c *cursor, lineNo int) (structName string, elem ir.ElemKind, count int64, size int64, err error) {
+func parsePtrTarget(c *cursor, lineNo int) (structName string, elem ir.ScalarKind, count int64, size int64, err error) {
 	if err = c.expect("("); err != nil {
 		return
 	}
 	if c.peek() == "[" {
 		elem, count, err = parseArray(c, lineNo)
-		size = 8 * count
+		if err != nil {
+			return
+		}
+		size = elem.Size() * count
 	} else {
 		var name string
 		name, err = c.next()
@@ -1036,9 +1069,6 @@ func parsePtrTarget(c *cursor, lineNo int) (structName string, elem ir.ElemKind,
 			return
 		}
 		structName = name
-	}
-	if err != nil {
-		return
 	}
 	err = c.expect(")")
 	return

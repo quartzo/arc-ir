@@ -22,7 +22,7 @@ func mustParse(t *testing.T, src string) *ir.Program {
 const loopSrc = `
 entry:
     r1 = ARENA_CREATE CXL_POOLED, 128
-    r2 = ARENA_ALLOC r1, 128
+    r2 = ARENA_ALLOC r1, [i64; 16]
     r3 = 0
 loop:
     JGE r3, 10, done
@@ -68,7 +68,7 @@ func TestVerifyRejections(t *testing.T) {
 			"use after destroy",
 			"entry:\n" +
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
-				"    r2 = ARENA_ALLOC r1, 32\n" +
+				"    r2 = ARENA_ALLOC r1, [i64; 4]\n" +
 				"    r3 = 7\n" +
 				"    ARENA_DESTROY r1\n" +
 				"    STORE [r2], r3\n" +
@@ -79,7 +79,7 @@ func TestVerifyRejections(t *testing.T) {
 			"out of bounds static",
 			"entry:\n" +
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
-				"    r2 = ARENA_ALLOC r1, 16\n" +
+				"    r2 = ARENA_ALLOC r1, [i64; 2]\n" +
 				"    r3 = 7\n" +
 				"    STORE [r2 + 12], r3\n" +
 				"    RET\n",
@@ -104,7 +104,7 @@ func TestVerifyRejections(t *testing.T) {
 			"unprovable dynamic bounds",
 			"entry:\n" +
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r2 = ARENA_ALLOC r1, 64\n" +
+				"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 				"    r3 = 100\n" +
 				"    STORE [r2 + r3], r3\n" +
 				"    RET\n",
@@ -114,7 +114,7 @@ func TestVerifyRejections(t *testing.T) {
 			"allocation exceeds arena",
 			"entry:\n" +
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 8\n" +
-				"    r2 = ARENA_ALLOC r1, 64\n" +
+				"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 				"    RET\n",
 			"exceeds capacity",
 		},
@@ -148,7 +148,7 @@ func TestVerifyBranchRefinement(t *testing.T) {
 	// [0,7] before the store, so [r2 + r3*8] is provably in bounds.
 	safe := "entry:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    r3 = LOAD [r2]\n" +
 		"    JLT r3, 0, out\n" +
 		"    JGE r3, 8, out\n" +
@@ -165,7 +165,7 @@ func TestVerifyBranchRefinement(t *testing.T) {
 	// Without the lower-bound guard the offset may be negative: rejected.
 	unsafe := "entry:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    r3 = LOAD [r2]\n" +
 		"    JGE r3, 8, out\n" +
 		"    STORE [r2 + r3*8], r3\n" +
@@ -221,7 +221,7 @@ func TestVerifyRecursion(t *testing.T) {
 func TestVerifyPointerParam(t *testing.T) {
 	src := "func main:\n" +
 		"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    r2 = ARENA_ALLOC r5, 64\n" +
+		"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
 		"    r1 = r2\n" +
 		"    CALL read\n" +
 		"    ARENA_DESTROY r5\n" +
@@ -249,7 +249,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 				"func f(r1: scalar):\n" +
 				"    r0 = r1\n" +
 				"    RET r0\n",
-			"expected scalar",
+			"expected an integer",
 		},
 		{
 			"unknown function",
@@ -262,7 +262,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 			"pointer argument too small",
 			"func main:\n" +
 				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r2 = ARENA_ALLOC r5, 16\n" +
+				"    r2 = ARENA_ALLOC r5, [i64; 2]\n" +
 				"    r1 = r2\n" +
 				"    CALL f\n" +
 				"    RET r0\n" +
@@ -275,7 +275,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 			"out of bounds through pointer parameter",
 			"func main:\n" +
 				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r2 = ARENA_ALLOC r5, 64\n" +
+				"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
 				"    r1 = r2\n" +
 				"    CALL f\n" +
 				"    ARENA_DESTROY r5\n" +
@@ -315,7 +315,7 @@ func TestVerifyNonScalarReturns(t *testing.T) {
 		"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 		"    RET r0\n" +
 		"func make(r1: arena) -> ptr([i64; 8]):\n" +
-		"    r0 = ARENA_ALLOC r1, 64\n" +
+		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET r0\n"
 	if _, err := Verify(mustParse(t, src)); err != nil {
 		t.Fatalf("expected success, got %v", err)
@@ -337,7 +337,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"returned allocation too small",
 			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    ARENA_DESTROY r5\n    r1 = 0\n    RET r1\n" +
-				"func f(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, 16\n    RET r0\n",
+				"func f(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, [i64; 2]\n    RET r0\n",
 			"16-byte allocation",
 		},
 		{
@@ -349,7 +349,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"return into destroyed arena",
 			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
-				"func f(r1: own arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
+				"func f(r1: own arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, [i64; 8]\n    ARENA_DESTROY r1\n    RET r0\n",
 			"no longer live",
 		},
 	}
@@ -397,7 +397,7 @@ func TestVerifyOwnership(t *testing.T) {
 		},
 		{
 			"use after ownership transfer",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 64\n    r3 = 7\n    CALL consume\n    STORE [r2], r3\n    RET\n" +
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 8]\n    r3 = 7\n    CALL consume\n    STORE [r2], r3\n    RET\n" +
 				"func consume(r1: own arena):\n    ARENA_DESTROY r1\n    RET\n",
 			"use-after-destroy",
 		},
@@ -423,15 +423,16 @@ func TestVerifyOwnership(t *testing.T) {
 }
 
 func TestVerifyTypedMemory(t *testing.T) {
-	// A stored pointer comes back as a data pointer.
-	valid := "func main:\n" +
+	// A pointer stored in a struct field comes back as a data pointer.
+	valid := "struct Box { p: ptr([i64; 1]) }\n" +
+		"func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
-		"    r2 = ARENA_ALLOC r1, 128\n" +
-		"    r3 = ARENA_ALLOC r1, 8\n" +
+		"    r2 = ARENA_ALLOC r1, Box\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 1]\n" +
 		"    r4 = 99\n" +
 		"    STORE [r3], r4\n" +
-		"    STORE [r2], r3\n" +
-		"    r5 = LOAD [r2]\n" +
+		"    r2.p = r3\n" +
+		"    r5 = r2.p\n" +
 		"    r6 = LOAD [r5]\n" +
 		"    PRINT r6\n" +
 		"    ARENA_DESTROY r1\n" +
@@ -446,18 +447,18 @@ func TestVerifyTypedMemory(t *testing.T) {
 		want string
 	}{
 		{
-			"store arena in memory",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    STORE [r2], r1\n    ARENA_DESTROY r1\n    RET\n",
-			"cannot store a value of type arena",
+			"store arena in an integer array",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, [i64; 16]\n    STORE [r2], r1\n    ARENA_DESTROY r1\n    RET\n",
+			"array element expects an integer",
 		},
 		{
-			"store pointer at dynamic offset",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    r3 = ARENA_ALLOC r1, 8\n    r4 = 0\n    STORE [r2 + r4*8], r3\n    ARENA_DESTROY r1\n    RET\n",
-			"only scalars may be stored",
+			"store pointer in an integer array",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, [i64; 16]\n    r3 = ARENA_ALLOC r1, [i64; 1]\n    STORE [r2], r3\n    ARENA_DESTROY r1\n    RET\n",
+			"array element expects an integer",
 		},
 		{
-			"untyped load is scalar",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    ARENA_DESTROY r1\n    RET\n",
+			"integer element is not a pointer",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, [i64; 16]\n    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    ARENA_DESTROY r1\n    RET\n",
 			"expected data pointer",
 		},
 	}
@@ -478,9 +479,9 @@ func TestVerifyCapacity(t *testing.T) {
 	// Cumulative over-allocation is rejected, even though each allocation fits.
 	over := "func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
-		"    r3 = ARENA_ALLOC r1, 64\n" +
-		"    r4 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r4 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    ARENA_DESTROY r1\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, over)); err == nil || !strings.Contains(err.Error(), "arena exhausted") {
@@ -490,8 +491,8 @@ func TestVerifyCapacity(t *testing.T) {
 	// An exact fit is accepted.
 	fits := "func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
-		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    ARENA_DESTROY r1\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, fits)); err != nil {
@@ -505,8 +506,8 @@ func TestVerifyCapacity(t *testing.T) {
 		"    ARENA_DESTROY r1\n" +
 		"    RET\n" +
 		"func fill(r1: arena(64)):\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
-		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, across)); err == nil || !strings.Contains(err.Error(), "arena exhausted") {
 		t.Fatalf("expected cross-function exhaustion, got %v", err)
@@ -516,7 +517,7 @@ func TestVerifyCapacity(t *testing.T) {
 func FuzzVerify(f *testing.F) {
 	f.Add("entry:\n    r1 = 1\n    RET\n")
 	f.Add("func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    RET\n")
-	f.Add("func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET\n")
+	f.Add("func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 8]\n    ARENA_DESTROY r1\n    RET\n")
 	f.Fuzz(func(t *testing.T, src string) {
 		prog, err := parser.Parse(src)
 		if err != nil {
@@ -531,9 +532,9 @@ func TestVerifyGrowableArena(t *testing.T) {
 	// Many allocations exceed any single chunk; the arena grows.
 	valid := "func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
-		"    r3 = ARENA_ALLOC r1, 64\n" +
-		"    r4 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r4 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    ARENA_DESTROY r1\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, valid)); err != nil {
@@ -547,7 +548,7 @@ func TestVerifyGrowableArena(t *testing.T) {
 		"    ARENA_DESTROY r1\n" +
 		"    RET\n" +
 		"func fill(r1: arena(4096)):\n" +
-		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET\n"
 	if _, err := Verify(mustParse(t, across)); err != nil {
 		t.Fatalf("expected growable to satisfy arena(4096), got %v", err)
@@ -560,13 +561,13 @@ func TestVerifyGrowableArena(t *testing.T) {
 	}{
 		{
 			"allocation larger than chunk",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, 128\n    ARENA_DESTROY r1\n    RET\n",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, [i64; 16]\n    ARENA_DESTROY r1\n    RET\n",
 			"exceeds chunk size",
 		},
 		{
 			"fixed arena smaller than declared parameter capacity",
 			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    CALL fill\n    ARENA_DESTROY r1\n    RET\n" +
-				"func fill(r1: arena(4096)):\n    r2 = ARENA_ALLOC r1, 64\n    RET\n",
+				"func fill(r1: arena(4096)):\n    r2 = ARENA_ALLOC r1, [i64; 8]\n    RET\n",
 			"smaller than the declared",
 		},
 	}
@@ -603,7 +604,7 @@ func TestVerifyFloat(t *testing.T) {
 	}{
 		{"float as pointer", "func main:\n    v1 = 1.0\n    r1 = LOAD [v1]\n    RET\n", "expected data pointer"},
 		{"FADD on scalar", "func main:\n    r1 = 1\n    v1 = FADD r1, r1\n    RET\n", "expected f64"},
-		{"ITOF on float", "func main:\n    v1 = 1.0\n    v2 = ITOF v1\n    RET\n", "expected scalar"},
+		{"ITOF on float", "func main:\n    v1 = 1.0\n    v2 = ITOF v1\n    RET\n", "expected integer"},
 		{"FTOI into vector", "func main:\n    v1 = 1.0\n    v2 = FTOI v1\n    RET\n", "requires a general register"},
 	}
 	for _, tc := range cases {
@@ -682,7 +683,7 @@ func TestVerifySIMD(t *testing.T) {
 	}{
 		{"mixing kinds", "func main:\n    v1 = f32x4(1.0)\n    v2 = i32x4(1)\n    v3 = VADD.f32x4 v1, v2\n    RET\n", "expected f32x4"},
 		{"print kind mismatch", "func main:\n    v1 = i32x4(1)\n    PRINTV.f32x4 v1\n    RET\n", "expected f32x4"},
-		{"scalar op on vector", "func main:\n    v1 = f32x4(1.0)\n    r1 = ADD v1, v1\n    RET\n", "expected scalar"},
+		{"scalar op on vector", "func main:\n    v1 = f32x4(1.0)\n    r1 = ADD v1, v1\n    RET\n", "expected integer"},
 		{"packed 64-bit multiply", "func main:\n    v1 = i64x2(1)\n    v2 = VMUL.i64x2 v1, v1\n    RET\n", "not available"},
 		{"packed integer divide", "func main:\n    v1 = i32x4(1)\n    v2 = VDIV.i32x4 v1, v1\n    RET\n", "not available"},
 	}
@@ -704,7 +705,7 @@ func TestVerifyStruct(t *testing.T) {
 		"func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
-		"    r3 = ARENA_ALLOC r1, 8\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 1]\n" +
 		"    r4 = 42\n" +
 		"    STORE [r3], r4\n" +
 		"    r2.next = r3\n" +
@@ -726,7 +727,7 @@ func TestVerifyStruct(t *testing.T) {
 	}{
 		{"uninitialized field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
 		{"wrong field type", "struct N { p: ptr([i64; 1]) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
-		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 8\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
+		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 1]\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
 		{"unknown field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
 	}
 	for _, tc := range cases {
@@ -747,7 +748,7 @@ func TestVerifyPtrStruct(t *testing.T) {
 		"func main:\n" +
 		"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r9, Node\n" +
-		"    r3 = ARENA_ALLOC r9, 8\n" +
+		"    r3 = ARENA_ALLOC r9, [i64; 1]\n" +
 		"    r4 = 42\n" +
 		"    STORE [r3], r4\n" +
 		"    r2.next = r3\n" +
@@ -771,7 +772,7 @@ func TestVerifyPtrStruct(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"raw ptr for struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, 64\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
+		{"raw ptr for struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, [i64; 8]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
 		{"uninitialized struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
 	}
 	for _, tc := range cases {
@@ -850,6 +851,103 @@ func TestVerifyArray(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestVerifyWidths(t *testing.T) {
+	valid := []struct {
+		name string
+		src  string
+	}{
+		{"u8 array", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r1, [u8; 8]\n" +
+			"    r3 = 200\n" +
+			"    STORE [r2 + 3], r3\n" +
+			"    r4 = LOAD [r2 + 3]\n" +
+			"    PRINT r4\n" +
+			"    ARENA_DESTROY r1\n" +
+			"    RET r4\n"},
+		{"i8 array sign extends", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r1, [i8; 4]\n" +
+			"    r3 = 1\n" +
+			"    STORE [r2], r3\n" +
+			"    r4 = LOAD [r2]\n" +
+			"    ARENA_DESTROY r1\n" +
+			"    RET r4\n"},
+		{"mixed-width struct", "struct R { a: u8, b: u16, c: u32, d: u64 }\n" +
+			"func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r1, R\n" +
+			"    r3 = 7\n" +
+			"    r2.a = r3\n" +
+			"    r2.b = r3\n" +
+			"    r2.c = r3\n" +
+			"    r2.d = r3\n" +
+			"    r4 = r2.c\n" +
+			"    ARENA_DESTROY r1\n" +
+			"    RET r4\n"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Verify(mustParse(t, tc.src)); err != nil {
+				t.Fatalf("expected program to verify, got %v", err)
+			}
+		})
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"float into integer array", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [u8; 8]\n    v1 = 1.5\n    STORE [r2], v1\n    ARENA_DESTROY r1\n    RET\n", "array element expects an integer"},
+		{"float element into gp", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [f64; 2]\n    r3 = LOAD [r2]\n    ARENA_DESTROY r1\n    RET\n", "requires a vector register"},
+		{"out of bounds by width", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [u8; 8]\n    r3 = LOAD [r2 + 8]\n    ARENA_DESTROY r1\n    RET\n", "out-of-bounds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyUnsignedCompare(t *testing.T) {
+	// A u8 value of 200 is > 100 unsigned; the branch is taken.
+	src := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [u8; 2]\n" +
+		"    r3 = 200\n" +
+		"    STORE [r2], r3\n" +
+		"    r4 = LOAD [r2]\n" +
+		"    r0 = 0\n" +
+		"    JGT r4, 100, big\n" +
+		"    r0 = 1\n" +
+		"big:\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET r0\n"
+	res, err := Verify(mustParse(t, src))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	// The comparison must have been lowered to its unsigned form.
+	found := false
+	for _, b := range res.Module.Funcs[0].Blocks {
+		for _, in := range b.Instrs {
+			if in.Op == ir.OpJgtu {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected the comparison to lower to JGTU")
 	}
 }
 
