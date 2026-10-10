@@ -314,6 +314,15 @@ func (x *x64) inst(inst ir.Instruction) error {
 		}
 		x.line("\t%s %s, %s", intStoreMnem(inst.Width), src, addr)
 
+	case ir.OpVariant:
+		base := x.load(inst.Src[0], scratch1)
+		x.line("\tmovb $%d, 0(%s)", inst.Variant, base)
+
+	case ir.OpJvariant:
+		base := x.load(inst.Src[0], scratch1)
+		x.line("\tcmpb $%d, 0(%s)", inst.Variant, base)
+		x.line("\tje %s", x.blockLabel(inst.Label))
+
 	case ir.OpAdd, ir.OpSub, ir.OpMul:
 		a := x.load(inst.Src[0], scratch1)
 		x.line("\tmovq %s, %s", a, scratch3)

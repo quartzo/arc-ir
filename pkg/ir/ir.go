@@ -229,6 +229,8 @@ const (
 	OpStore        // STORE [mem], rsrc
 	OpField        // rdst = rbase.field      (resolved by the verifier to LOAD)
 	OpFieldStore   // rbase.field = rsrc      (resolved by the verifier to STORE)
+	OpVariant      // VARIANT rsrc, Enum.Variant   (set the active variant)
+	OpJvariant     // JV rsrc, Enum.Variant, label (branch on the active variant)
 	OpAdd          // rdst = ADD ra, (rb | imm)
 	OpSub          // rdst = SUB ra, (rb | imm)
 	OpMul          // rdst = MUL ra, (rb | imm)
@@ -276,6 +278,8 @@ var opNames = map[OpCode]string{
 	OpStore:        "STORE",
 	OpField:        "FIELD",
 	OpFieldStore:   "FIELDSTORE",
+	OpVariant:      "VARIANT",
+	OpJvariant:     "JV",
 	OpAdd:          "ADD",
 	OpSub:          "SUB",
 	OpMul:          "MUL",
@@ -331,7 +335,7 @@ func OpFromName(name string) (OpCode, bool) {
 // IsCondJump reports whether the opcode is a conditional jump.
 func (o OpCode) IsCondJump() bool {
 	switch o {
-	case OpJeq, OpJne, OpJlt, OpJle, OpJgt, OpJge, OpJltu, OpJleu, OpJgtu, OpJgeu:
+	case OpJeq, OpJne, OpJlt, OpJle, OpJgt, OpJge, OpJltu, OpJleu, OpJgtu, OpJgeu, OpJvariant:
 		return true
 	default:
 		return false
@@ -415,6 +419,8 @@ type Instruction struct {
 	Elem     ScalarKind // OpArenaAlloc: array element type (when Count > 0)
 	Count    int64      // OpArenaAlloc: array element count
 	Field    string     // OpField / OpFieldStore: field name
+	Enum     string     // OpVariant / OpJvariant: enum type name
+	Variant  int        // OpVariant / OpJvariant: variant index
 
 	// Width and Signed describe a LOAD/STORE access; the verifier fills them
 	// from the type at the access (1, 2, 4 or 8 bytes).
@@ -483,6 +489,10 @@ func (i Instruction) String() string {
 		return fmt.Sprintf("%sLOAD %s", dst, i.Mem)
 	case OpStore:
 		return fmt.Sprintf("STORE %s, %s", i.Mem, i.Src[0])
+	case OpVariant:
+		return fmt.Sprintf("VARIANT %s, %s.%s", i.Src[0], i.Enum, i.Field)
+	case OpJvariant:
+		return fmt.Sprintf("JV %s, %s.%s, %s", i.Src[0], i.Enum, i.Field, i.Label)
 	case OpAdd, OpSub, OpMul:
 		rhs := fmt.Sprintf("%d", i.Imm)
 		if i.Src[1].Valid() {
@@ -531,6 +541,7 @@ func (i Instruction) String() string {
 type Program struct {
 	Instrs  []Instruction
 	Structs map[string]*Struct
+	Enums   map[string]*Enum
 }
 
 // Field is one member of a struct: an integer/float scalar, an arena handle, or
@@ -621,6 +632,89 @@ func roundUp(v, a int64) int64 {
 		return v
 	}
 	return (v + a - 1) / a * a
+}
+
+// Variant is one case of an enum: a name and its named payload fields.
+type Variant struct {
+	Name   string
+	Fields []Field
+}
+
+// Enum is a tagged union. Its layout is a one-byte tag at offset 0 followed by
+// a payload region sized to the largest variant; every variant's fields live at
+// their offset inside that shared payload.
+type Enum struct {
+	Name     string
+	Variants []Variant
+
+	payloadOff int64
+	size       int64
+}
+
+// Size returns the enum size in bytes (valid after Layout).
+func (e *Enum) Size() int64 { return e.size }
+
+// PayloadOff returns the byte offset of the payload region.
+func (e *Enum) PayloadOff() int64 { return e.payloadOff }
+
+// VariantIndex returns the index of a named variant, or -1 if absent.
+func (e *Enum) VariantIndex(name string) int {
+	for i := range e.Variants {
+		if e.Variants[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// Layout assigns each variant field an offset inside the shared payload and
+// computes the payload offset and the enum size.
+func (e *Enum) Layout() {
+	var align int64 = 1
+	for vi := range e.Variants {
+		for fi := range e.Variants[vi].Fields {
+			if a := e.Variants[vi].Fields[fi].Alignment(); a > align {
+				align = a
+			}
+		}
+	}
+	e.payloadOff = roundUp(1, align)
+
+	var maxEnd int64
+	for vi := range e.Variants {
+		v := &e.Variants[vi]
+		off := e.payloadOff
+		var vAlign int64 = 1
+		for fi := range v.Fields {
+			f := &v.Fields[fi]
+			a := f.Alignment()
+			off = roundUp(off, a)
+			f.Offset = off
+			off += f.Width()
+			if a > vAlign {
+				vAlign = a
+			}
+		}
+		off = roundUp(off, vAlign)
+		if off > maxEnd {
+			maxEnd = off
+		}
+	}
+	e.size = roundUp(maxEnd, align)
+}
+
+// VariantFieldAt returns the field of the variant whose absolute offset is off.
+func (e *Enum) VariantFieldAt(variant int, off int64) *Field {
+	if variant < 0 || variant >= len(e.Variants) {
+		return nil
+	}
+	v := &e.Variants[variant]
+	for i := range v.Fields {
+		if v.Fields[i].Offset == off {
+			return &v.Fields[i]
+		}
+	}
+	return nil
 }
 
 func formatParams(params []Param) string {

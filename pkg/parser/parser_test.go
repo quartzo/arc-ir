@@ -339,6 +339,38 @@ func TestStructLayout(t *testing.T) {
 	}
 }
 
+func TestParseEnum(t *testing.T) {
+	prog, err := Parse("enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }\n" +
+		"func main:\n" +
+		"    r1 = ARENA_ALLOC r0, Value\n" +
+		"    VARIANT r1, Value.Pair\n" +
+		"    JV r1, Value.Int, x\n" +
+		"x:\n" +
+		"    RET\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	e := prog.Enums["Value"]
+	if e == nil || len(e.Variants) != 3 {
+		t.Fatalf("enum parsed as %+v", e)
+	}
+	if e.PayloadOff() != 8 || e.Size() != 16 {
+		t.Errorf("payload off = %d, size = %d, want 8, 16", e.PayloadOff(), e.Size())
+	}
+	if e.VariantIndex("Pair") != 1 {
+		t.Errorf("Pair index = %d, want 1", e.VariantIndex("Pair"))
+	}
+	if f := e.VariantFieldAt(1, 8); f == nil || f.Name != "a" {
+		t.Errorf("Pair.a at offset 8 = %+v", f)
+	}
+	if in := prog.Instrs[2]; in.Op != ir.OpVariant || in.Enum != "Value" || in.Variant != 1 {
+		t.Errorf("VARIANT parsed as %+v", in)
+	}
+	if in := prog.Instrs[3]; in.Op != ir.OpJvariant || in.Enum != "Value" || in.Variant != 0 || in.Label != "x" {
+		t.Errorf("JV parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

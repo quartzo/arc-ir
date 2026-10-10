@@ -49,6 +49,7 @@ verification and code generation stay simple and direct.
 | — | Variable-width memory: `i8`…`i64`/`u8`…`u64` integer types, typed 1/2/4/8-byte loads/stores | ✅ |
 | — | Struct layout: natural alignment, `packed struct`, per-field `align N` | ✅ |
 | — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
+| — | Enums: tagged unions (`VARIANT`/`JV`) with active-variant tag refinement | ✅ |
 
 ## Layout
 
@@ -93,6 +94,8 @@ saved to its stack slot around a call and restored afterwards.
 | `ARENA_DESTROY rsrc` | free an arena and invalidate its pointers |
 | `rdst = LOAD [mem]` | read a value (width from the pointed-to type) |
 | `STORE [mem], rsrc` | write a value (width from the pointed-to type) |
+| `VARIANT r, Enum.Variant` | select a union variant (writes the tag) |
+| `JV r, Enum.Variant, label` | branch on the active variant, refining it |
 | `rdst = ADD rsrc, (<reg> | <imm>)` | also `SUB`, `MUL` |
 | `PRINT rsrc` | print an integer |
 | `RET rsrc` | return (becomes the process exit code) |
@@ -234,6 +237,16 @@ too-small pointer is rejected — and reading a field before writing it is rejec
 parameter, so the callee can read and write fields (`examples/struct.arc`,
 `examples/ptr_struct.arc`).
 
+## Enums
+
+An **enum** is a tagged union (`enum Value { Int(n: i64), Pair(a: i32, b: i32),
+Nil }`). `ARENA_ALLOC r, Value` allocates it; `VARIANT r, Value.Int` selects a
+variant and `JV r, Value.Int, label` branches when that variant is active,
+**refining** the verifier's knowledge of the active variant. `r.field` reads a
+field of the active variant. Reading a field while the variant is unknown, or a
+field of a different variant, or a field that was not written, is rejected — the
+tag-refinement generalizes eBPF nullability (`examples/enum.arc`).
+
 ## The Verifier
 
 The verifier is an abstract interpreter over the control-flow graph. For every
@@ -355,7 +368,6 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Enums: tag + payload with tag refinement (generalizes eBPF nullability).
 - Path-sensitive merge of ownership (fewer conservative rejections).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.

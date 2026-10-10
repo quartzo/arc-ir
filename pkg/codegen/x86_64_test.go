@@ -186,6 +186,15 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, P\n" +
 			"    r3 = 9\n    r2.a = r3\n    r4 = 123456\n    r2.b = r4\n" +
 			"    r5 = r2.b\n    PRINT r5\n    ARENA_DESTROY r1\n    RET r5\n", "123456"},
+		{"enum", "enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }\n" +
+			"func main:\n" +
+			"    r5 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r5, Value\n" +
+			"    VARIANT r2, Value.Int\n    r3 = 21\n    r2.n = r3\n    r1 = r2\n    CALL twice\n" +
+			"    PRINT r0\n    ARENA_DESTROY r5\n    RET\n" +
+			"func twice(r1: ptr(Value)) -> i64:\n" +
+			"    JV r1, Value.Int, as_int\n    JV r1, Value.Pair, as_pair\n    r0 = 0\n    RET r0\n" +
+			"as_int:\n    r0 = r1.n\n    r0 = ADD r0, r0\n    RET r0\n" +
+			"as_pair:\n    r2 = r1.a\n    r3 = r1.b\n    r0 = ADD r2, r3\n    RET r0\n", "42"},
 	}
 
 	for _, tc := range cases {

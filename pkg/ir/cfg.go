@@ -36,6 +36,7 @@ type Module struct {
 	ByName  map[string]*Function
 	Entry   *Function
 	Structs map[string]*Struct
+	Enums   map[string]*Enum
 }
 
 // BuildModule splits a program into functions, then builds each function's
@@ -50,7 +51,7 @@ func BuildModule(p *Program) (*Module, error) {
 		return nil, err
 	}
 
-	m := &Module{ByName: map[string]*Function{}, Structs: p.Structs}
+	m := &Module{ByName: map[string]*Function{}, Structs: p.Structs, Enums: p.Enums}
 	for _, r := range raw {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)

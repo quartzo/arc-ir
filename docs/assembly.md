@@ -118,7 +118,7 @@ an arena invalidates every pointer derived from it.
 | `rdst = ARENA_CREATE <tier>, <size>` | create a **fixed** arena of `size` bytes |
 | `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a **growable** arena whose chunks are `chunk` bytes |
 | `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`); `rdst` is an array pointer |
-| `rdst = ARENA_ALLOC rsrc, <Struct>` | allocate `sizeof(Struct)` and give `rdst` the struct type |
+| `rdst = ARENA_ALLOC rsrc, <Struct | Enum>` | allocate `sizeof(...)` and give `rdst` the struct or enum type |
 | `ARENA_DESTROY rsrc` | free arena `rsrc` and invalidate its pointers |
 
 Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`).
@@ -197,6 +197,19 @@ literals name their kind. Vectors live in vector
 registers; the verifier tracks the vector type (element kind and width) but not
 per-lane values, and requires the two operands of an operation to have the same
 kind. Packed integer division and packed 64-bit multiply are not available.
+
+### 4.9 Enums
+
+| Instruction | Semantics |
+|-------------|-----------|
+| `VARIANT r, Enum.Variant` | select a variant: write the tag, reset the payload |
+| `JV r, Enum.Variant, label` | branch if the active variant of `r` is `Variant` |
+
+`VARIANT` writes the tag and makes `r`'s active variant known, so the variant's
+fields can be written. `JV` refines the active variant along the taken edge (and
+clears it along the fall-through), so the taken block can read that variant's
+fields. A field access `r.field` is resolved to a typed load/store at the
+field's offset (see §11).
 
 ## 5. Memory model
 
@@ -407,4 +420,48 @@ Element `k` lives at offset `k * sizeof(T)`:
 
 Array bounds are checked exactly like any other pointer: the access of width
 `sizeof(T)` must lie within `N * sizeof(T)` bytes of the allocation.
+
+## 11. Enums
+
+An enum is a tagged union. Each variant names a set of fields (the same scalar,
+arena and pointer types as a struct). The layout is a one-byte tag at offset 0
+followed by a payload region sized to the largest variant; every variant's
+fields live at their offset inside that shared payload:
+
+```
+enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }
+```
+
+`ARENA_ALLOC r, Value` allocates `sizeof(Value)` and gives `r` the enum type.
+The active variant is tracked by the verifier:
+
+- `VARIANT r, Value.Int` selects a variant: the tag is written and the payload
+  becomes uninitialized, so the variant's fields must be written before reading.
+- `JV r, Value.Int, label` branches when the active variant is `Int` and
+  **refines** the active variant on the taken edge.
+- `r.field` reads a field of the active variant; `r.field = rsrc` writes one.
+  Reading a field when the variant is unknown (or a field of a different
+  variant) is rejected, and so is reading a field before it is written.
+
+A `ptr(Value)` parameter carries the enum type but not the variant; the callee
+tests it with `JV`. Because a callee may change the tag, the caller's variant is
+forgotten after a call.
+
+```
+func twice(r1: ptr(Value)) -> i64:
+    JV r1, Value.Int, as_int
+    JV r1, Value.Pair, as_pair
+    r0 = 0
+    RET r0
+as_int:
+    r0 = r1.n
+    r0 = ADD r0, r0
+    RET r0
+as_pair:
+    r2 = r1.a
+    r3 = r1.b
+    r0 = ADD r2, r3
+    RET r0
+```
+
 

@@ -57,7 +57,9 @@ alternatives are recorded so the choices are visible and revisitable.
 ### Representation of meaning
 
 - **(chosen) Verifier-tracked abstract state** — no runtime tags, no fat
-  pointers.
+  pointers. A union carries a one-byte tag in memory, but its *active variant* is
+  tracked by the verifier and refined on a `JV` branch, so a payload read is
+  only allowed once the variant is known.
 - Tagged values / fat pointers — runtime cost and size overhead.
 
 ### Memory width and operators

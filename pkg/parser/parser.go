@@ -30,7 +30,7 @@ import (
 
 // Parse reads a complete ARC program.
 func Parse(src string) (*ir.Program, error) {
-	prog := &ir.Program{Structs: map[string]*ir.Struct{}}
+	prog := &ir.Program{Structs: map[string]*ir.Struct{}, Enums: map[string]*ir.Enum{}}
 	for i, raw := range strings.Split(src, "\n") {
 		lineNo := i + 1
 		line := stripComment(raw)
@@ -47,6 +47,12 @@ func Parse(src string) (*ir.Program, error) {
 			}
 			continue
 		}
+		if toks[0] == "enum" {
+			if err := parseEnum(prog, toks, lineNo); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		inst, err := parseLine(toks, lineNo)
 		if err != nil {
 			return nil, err
@@ -54,55 +60,96 @@ func Parse(src string) (*ir.Program, error) {
 		prog.Instrs = append(prog.Instrs, inst)
 	}
 
-	// Lay out every struct (offsets and size), then resolve pointer targets to
-	// a byte size. Layout does not depend on the pointed-to sizes (a pointer is
-	// always one word), so the order is safe even for self-referential structs.
+	// Lay out every struct and enum (offsets and size), then resolve pointer
+	// targets and variant names. Layout does not depend on the pointed-to sizes
+	// (a pointer is always one word), so the order is safe even for
+	// self-referential types.
 	for _, st := range prog.Structs {
 		st.Layout()
 	}
+	for _, e := range prog.Enums {
+		e.Layout()
+	}
 	for i := range prog.Instrs {
 		in := &prog.Instrs[i]
-		if in.Op == ir.OpArenaAlloc && in.Struct != "" {
-			st, ok := prog.Structs[in.Struct]
-			if !ok {
-				return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, in.Struct)
+		switch in.Op {
+		case ir.OpArenaAlloc:
+			if in.Struct != "" {
+				size, ok := namedSize(prog, in.Struct)
+				if !ok {
+					return nil, fmt.Errorf("line %d: unknown type %q", in.Line, in.Struct)
+				}
+				in.Size = size
 			}
-			in.Size = st.Size()
-		}
-		if in.Op == ir.OpFunc {
+		case ir.OpVariant, ir.OpJvariant:
+			e, ok := prog.Enums[in.Enum]
+			if !ok {
+				return nil, fmt.Errorf("line %d: unknown enum %q", in.Line, in.Enum)
+			}
+			idx := e.VariantIndex(in.Field)
+			if idx < 0 {
+				return nil, fmt.Errorf("line %d: enum %s has no variant %q", in.Line, in.Enum, in.Field)
+			}
+			in.Variant = idx
+		case ir.OpFunc:
 			for j := range in.Params {
 				p := &in.Params[j]
 				if p.Kind == ir.KindPtr && p.Struct != "" {
-					st, ok := prog.Structs[p.Struct]
+					size, ok := namedSize(prog, p.Struct)
 					if !ok {
-						return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, p.Struct)
+						return nil, fmt.Errorf("line %d: unknown type %q", in.Line, p.Struct)
 					}
-					p.Size = st.Size()
+					p.Size = size
 				}
 			}
 			if in.RetKind == ir.KindPtr && in.RetStruct != "" {
-				st, ok := prog.Structs[in.RetStruct]
+				size, ok := namedSize(prog, in.RetStruct)
 				if !ok {
-					return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, in.RetStruct)
+					return nil, fmt.Errorf("line %d: unknown type %q", in.Line, in.RetStruct)
 				}
-				in.RetSize = st.Size()
+				in.RetSize = size
 			}
 		}
 	}
-	// Resolve struct-pointer fields to the size of the pointed-to struct.
+	// Resolve named-pointer fields to the size of the pointed-to type.
 	for _, st := range prog.Structs {
 		for i := range st.Fields {
 			f := &st.Fields[i]
 			if f.Type == ir.KindPtr && f.Struct != "" {
-				target, ok := prog.Structs[f.Struct]
+				size, ok := namedSize(prog, f.Struct)
 				if !ok {
-					return nil, fmt.Errorf("unknown struct %q in field %s.%s", f.Struct, st.Name, f.Name)
+					return nil, fmt.Errorf("unknown type %q in field %s.%s", f.Struct, st.Name, f.Name)
 				}
-				f.Size = target.Size()
+				f.Size = size
+			}
+		}
+	}
+	for _, e := range prog.Enums {
+		for vi := range e.Variants {
+			for i := range e.Variants[vi].Fields {
+				f := &e.Variants[vi].Fields[i]
+				if f.Type == ir.KindPtr && f.Struct != "" {
+					size, ok := namedSize(prog, f.Struct)
+					if !ok {
+						return nil, fmt.Errorf("unknown type %q in field %s.%s.%s", f.Struct, e.Name, e.Variants[vi].Name, f.Name)
+					}
+					f.Size = size
+				}
 			}
 		}
 	}
 	return prog, nil
+}
+
+// namedSize returns the size of a struct or enum by name.
+func namedSize(prog *ir.Program, name string) (int64, bool) {
+	if st, ok := prog.Structs[name]; ok {
+		return st.Size(), true
+	}
+	if e, ok := prog.Enums[name]; ok {
+		return e.Size(), true
+	}
+	return 0, false
 }
 
 // parseStruct parses "struct Name { field: type, ... }" or
@@ -145,30 +192,11 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 			}
 			break
 		}
-		fname, err := c.next()
+		f, err := parseField(c, lineNo)
 		if err != nil {
 			return err
 		}
-		if !isIdent(fname) {
-			return fmt.Errorf("line %d: expected field name, got %q", lineNo, fname)
-		}
-		if err := c.expect(":"); err != nil {
-			return err
-		}
-		spec, err := parseTypeSpec(c, lineNo)
-		if err != nil {
-			return err
-		}
-		f := ir.Field{
-			Name:   fname,
-			Type:   spec.kind,
-			Scalar: spec.scalar,
-			Size:   spec.size,
-			Struct: spec.structName,
-			Elem:   spec.elem,
-			Count:  spec.count,
-			Align:  pendingAlign,
-		}
+		f.Align = pendingAlign
 		pendingAlign = 0
 		st.Fields = append(st.Fields, f)
 		if c.peek() == "," {
@@ -187,6 +215,95 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 		return fmt.Errorf("line %d: duplicate struct %q", lineNo, name)
 	}
 	prog.Structs[name] = st
+	return nil
+}
+
+// parseField parses "name: type".
+func parseField(c *cursor, lineNo int) (ir.Field, error) {
+	fname, err := c.next()
+	if err != nil {
+		return ir.Field{}, err
+	}
+	if !isIdent(fname) {
+		return ir.Field{}, fmt.Errorf("line %d: expected field name, got %q", lineNo, fname)
+	}
+	if err := c.expect(":"); err != nil {
+		return ir.Field{}, err
+	}
+	spec, err := parseTypeSpec(c, lineNo)
+	if err != nil {
+		return ir.Field{}, err
+	}
+	return ir.Field{
+		Name:   fname,
+		Type:   spec.kind,
+		Scalar: spec.scalar,
+		Size:   spec.size,
+		Struct: spec.structName,
+		Elem:   spec.elem,
+		Count:  spec.count,
+	}, nil
+}
+
+// parseEnum parses "enum Name { Variant, Variant(field: type, ...), ... }".
+func parseEnum(prog *ir.Program, toks []string, lineNo int) error {
+	c := &cursor{toks: toks, line: lineNo}
+	c.pos++ // skip "enum"
+	name, err := c.next()
+	if err != nil {
+		return err
+	}
+	if !isIdent(name) {
+		return fmt.Errorf("line %d: expected enum name, got %q", lineNo, name)
+	}
+	if err := c.expect("{"); err != nil {
+		return err
+	}
+	e := &ir.Enum{Name: name}
+	for c.peek() != "}" {
+		vname, err := c.next()
+		if err != nil {
+			return err
+		}
+		if !isIdent(vname) {
+			return fmt.Errorf("line %d: expected variant name, got %q", lineNo, vname)
+		}
+		v := ir.Variant{Name: vname}
+		if c.peek() == "(" {
+			c.pos++
+			for c.peek() != ")" {
+				f, err := parseField(c, lineNo)
+				if err != nil {
+					return err
+				}
+				v.Fields = append(v.Fields, f)
+				if c.peek() == "," {
+					c.pos++
+					continue
+				}
+				break
+			}
+			if err := c.expect(")"); err != nil {
+				return err
+			}
+		}
+		e.Variants = append(e.Variants, v)
+		if c.peek() == "," {
+			c.pos++
+			continue
+		}
+		break
+	}
+	if err := c.expect("}"); err != nil {
+		return err
+	}
+	if err := noTrailing(c); err != nil {
+		return err
+	}
+	if _, dup := prog.Enums[name]; dup {
+		return fmt.Errorf("line %d: duplicate enum %q", lineNo, name)
+	}
+	prog.Enums[name] = e
 	return nil
 }
 
@@ -684,6 +801,32 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		}
 		inst.Src[0] = src
 
+	case ir.OpVariant, ir.OpJvariant:
+		r, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[0] = r
+		if err := c.expect(","); err != nil {
+			return inst, err
+		}
+		enumName, variantName, err := c.enumVariant(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Enum = enumName
+		inst.Field = variantName
+		if op == ir.OpJvariant {
+			if err := c.expect(","); err != nil {
+				return inst, err
+			}
+			label, err := c.next()
+			if err != nil {
+				return inst, err
+			}
+			inst.Label = label
+		}
+
 	case ir.OpAdd, ir.OpSub, ir.OpMul:
 		ra, err := c.reg(lineNo)
 		if err != nil {
@@ -814,6 +957,19 @@ func (c *cursor) reg(lineNo int) (ir.Register, error) {
 		return ir.NoReg, err
 	}
 	return parseRegister(t, lineNo)
+}
+
+// enumVariant parses "Enum.Variant".
+func (c *cursor) enumVariant(lineNo int) (string, string, error) {
+	tok, err := c.next()
+	if err != nil {
+		return "", "", err
+	}
+	enumName, variantName, ok := strings.Cut(tok, ".")
+	if !ok || !isIdent(enumName) || !isIdent(variantName) {
+		return "", "", fmt.Errorf("line %d: expected Enum.Variant, got %q", lineNo, tok)
+	}
+	return enumName, variantName, nil
 }
 
 func (c *cursor) tier(lineNo int) (ir.TopologyTier, error) {

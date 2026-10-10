@@ -724,7 +724,7 @@ func TestVerifyStruct(t *testing.T) {
 	}{
 		{"uninitialized field", "struct N { a: i64 }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
 		{"wrong field type", "struct N { p: ptr([i64; 1]) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
-		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 1]\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
+		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 1]\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct or enum pointer"},
 		{"unknown field", "struct N { a: i64 }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
 	}
 	for _, tc := range cases {
@@ -945,6 +945,44 @@ func TestVerifyUnsignedCompare(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected the comparison to lower to JGTU")
+	}
+}
+
+func TestVerifyEnum(t *testing.T) {
+	valid := "enum V { A(x: i64), B(y: i32) }\n" +
+		"func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r2 = ARENA_ALLOC r1, V\n" +
+		"    VARIANT r2, V.A\n" +
+		"    r3 = 7\n" +
+		"    r2.x = r3\n" +
+		"    r4 = r2.x\n" +
+		"    PRINT r4\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET r4\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected enum program to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"wrong variant field", "enum V { A(x: i64), B(y: i32) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, V\n    VARIANT r2, V.A\n    r3 = r2.y\n    ARENA_DESTROY r1\n    RET\n", "V has no field"},
+		{"unknown variant", "enum V { A(x: i64), B(y: i32) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, V\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "unknown active variant"},
+		{"uninitialized payload", "enum V { A(x: i64), B(y: i32) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, V\n    VARIANT r2, V.A\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
 	}
 }
 

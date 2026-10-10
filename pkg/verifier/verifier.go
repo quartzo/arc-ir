@@ -198,9 +198,10 @@ type RegState struct {
 	Owned     bool          // this function holds the reference and must release it
 	Foreign   bool          // data pointer whose arena provenance is unknown (from a call)
 	Growable  bool          // arena handle: extensible (AllocSize is the chunk size)
-	Struct    string        // data pointer: struct type name, if any
+	Struct    string        // data pointer: struct or enum type name, if any
 	Elem      ir.ScalarKind // data pointer: array element type (when Count > 0)
 	Count     int64         // data pointer: array element count
+	Variant   int           // enum pointer: active variant index (-1 = unknown)
 	AllocSize int64         // reachable bytes (arena capacity/chunk, or allocation size)
 	Init      bool          // memory cell: has been written
 	Declared  bool          // memory cell: seeded from a struct field (type is a contract)
@@ -252,12 +253,18 @@ func (s *State) getCell(alloc int, off int64) (RegState, bool) {
 	return c, ok
 }
 
-// clearAlloc drops every typed cell of an allocation, used when a callee may
-// have written through a pointer to it.
+// clearAlloc drops every typed cell of an allocation and forgets any enum
+// variant tracked for it, used when a callee may have written through a
+// pointer to it.
 func (s *State) clearAlloc(alloc int) {
 	for k := range s.Mem {
 		if k.Alloc == alloc {
 			delete(s.Mem, k)
+		}
+	}
+	for r := range s.Regs {
+		if s.Regs[r].AllocID == alloc {
+			s.Regs[r].Variant = -1
 		}
 	}
 }
@@ -396,25 +403,10 @@ func (v *Verifier) entryState() (State, error) {
 			// typed inside the callee.
 			alloc := v.nextParamAlloc
 			v.nextParamAlloc++
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct, Elem: p.Elem, Count: p.Count}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct, Elem: p.Elem, Count: p.Count, Variant: -1}
 			if p.Struct != "" {
-				sf := v.mod.Structs[p.Struct]
-				if sf == nil {
-					return st, fmt.Errorf("function %s: unknown struct %q", v.f.Name, p.Struct)
-				}
-				for i := range sf.Fields {
-					f := &sf.Fields[i]
-					st.setCell(alloc, f.Offset, RegState{
-						Type:      fieldRegType(f),
-						RefID:     -1,
-						AllocID:   -1,
-						AllocSize: f.Size,
-						Struct:    f.Struct,
-						Elem:      f.Elem,
-						Count:     f.Count,
-						Declared:  true,
-						Init:      true,
-					})
+				if err := v.seedNamed(&st, alloc, p.Struct, true); err != nil {
+					return st, fmt.Errorf("function %s: %w", v.f.Name, err)
 				}
 			}
 		default:
@@ -445,6 +437,12 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			return out, nil
 
 		case inst.Op.IsCondJump():
+			if inst.Op == ir.OpJvariant {
+				if err := v.jvariant(st, out, inst); err != nil {
+					return nil, err
+				}
+				break
+			}
 			rs, err := v.scalar(st, inst.Src[0], inst)
 			if err != nil {
 				return nil, err
@@ -499,15 +497,29 @@ func (v *Verifier) resolve(inst ir.Instruction, st *State) (ir.Instruction, erro
 		return inst, err
 	}
 	if base.Type != TypeDataPtr || base.Struct == "" {
-		return inst, v.errf(inst, "field access needs a struct pointer in %s", inst.Src[0])
+		return inst, v.errf(inst, "field access needs a struct or enum pointer in %s", inst.Src[0])
 	}
-	sf := v.mod.Structs[base.Struct]
-	if sf == nil {
-		return inst, v.errf(inst, "unknown struct %s", base.Struct)
+	off := int64(-1)
+	switch {
+	case v.mod.Structs[base.Struct] != nil:
+		off, _ = v.mod.Structs[base.Struct].Offset(inst.Field)
+	case v.mod.Enums[base.Struct] != nil:
+		e := v.mod.Enums[base.Struct]
+		if base.Variant < 0 {
+			return inst, v.errf(inst, "enum %s has an unknown active variant; test it with JV first", base.Struct)
+		}
+		vf := e.Variants[base.Variant].Fields
+		for i := range vf {
+			if vf[i].Name == inst.Field {
+				off = vf[i].Offset
+				break
+			}
+		}
+	default:
+		return inst, v.errf(inst, "unknown type %s", base.Struct)
 	}
-	off, _ := sf.Offset(inst.Field)
 	if off < 0 {
-		return inst, v.errf(inst, "struct %s has no field %q", base.Struct, inst.Field)
+		return inst, v.errf(inst, "%s has no field %q", base.Struct, inst.Field)
 	}
 	out := ir.Instruction{Line: inst.Line}
 	out.Src = [2]ir.Register{ir.NoReg, ir.NoReg}
@@ -579,25 +591,12 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			Struct:    inst.Struct,
 			Elem:      inst.Elem,
 			Count:     inst.Count,
+			Variant:   -1,
 			AllocSize: inst.Size,
 		}
 		if inst.Struct != "" {
-			sf := v.mod.Structs[inst.Struct]
-			if sf == nil {
-				return v.errf(inst, "unknown struct %s", inst.Struct)
-			}
-			for i := range sf.Fields {
-				f := &sf.Fields[i]
-				st.setCell(alloc, f.Offset, RegState{
-					Type:      fieldRegType(f),
-					RefID:     -1,
-					AllocID:   -1,
-					AllocSize: f.Size,
-					Struct:    f.Struct,
-					Elem:      f.Elem,
-					Count:     f.Count,
-					Declared:  true,
-				})
+			if err := v.seedNamed(st, alloc, inst.Struct, false); err != nil {
+				return v.errf(inst, "%s", err)
 			}
 		}
 		return nil
@@ -641,8 +640,23 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if !inst.Dst.IsGP() {
 			return v.errf(inst, "loading %s requires a general register", rt)
 		}
-		// A declared struct cell keeps the exact stored type (and value).
+		// A declared struct or enum field keeps the exact stored type and value.
 		if ptr.Count == 0 {
+			if v.mod.Enums[ptr.Struct] != nil {
+				f := v.enumFieldAt(ptr.Struct, ptr.Variant, inst.Mem.Offset)
+				cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset)
+				if !ok || !cell.Init {
+					return v.errf(inst, "field at offset %d is not initialized", inst.Mem.Offset)
+				}
+				if f != nil && cell.Type == fieldRegType(f) {
+					st.Regs[inst.Dst] = loadFromCell(cell)
+				} else if f != nil {
+					st.Regs[inst.Dst] = fieldState(f)
+				} else {
+					st.Regs[inst.Dst] = loadFromCell(cell)
+				}
+				return nil
+			}
 			if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok {
 				if cell.Declared && !cell.Init {
 					return v.errf(inst, "field at offset %d is not initialized", inst.Mem.Offset)
@@ -691,14 +705,20 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			}
 			return nil
 		}
-		// Struct: the field's declared cell (tracking initialization) or, for a
-		// foreign pointer, the field type from the layout.
+		// Struct or enum: the field's declared cell (tracking initialization)
+		// or, for a foreign pointer, the field type from the layout.
 		var cell RegState
-		if c, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && c.Declared {
-			cell = c
+		found := false
+		if v.mod.Enums[ptr.Struct] != nil {
+			if f := v.enumFieldAt(ptr.Struct, ptr.Variant, inst.Mem.Offset); f != nil {
+				cell, found = fieldCell(f), true
+			}
+		} else if c, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && c.Declared {
+			cell, found = c, true
 		} else if f := structFieldAt(v.mod, ptr.Struct, inst.Mem.Offset); f != nil {
-			cell = fieldCell(f)
-		} else {
+			cell, found = fieldCell(f), true
+		}
+		if !found {
 			return v.errf(inst, "no field at offset %d in %s", inst.Mem.Offset, ptr.Struct)
 		}
 		if err := v.fieldCompatible(cell, src, inst); err != nil {
@@ -716,6 +736,21 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			Init:      true,
 			Destroyed: src.Destroyed,
 		})
+		return nil
+
+	case ir.OpVariant:
+		ptr, err := v.enumPtr(st, inst.Src[0], inst)
+		if err != nil {
+			return err
+		}
+		e := v.mod.Enums[ptr.Struct]
+		if inst.Variant < 0 || inst.Variant >= len(e.Variants) {
+			return v.errf(inst, "invalid variant of enum %s", ptr.Struct)
+		}
+		// The tag is now known; the payload starts uninitialized.
+		st.setCell(ptr.AllocID, 0, RegState{Type: TypeU8, Declared: true, Init: true})
+		v.clearPayload(st, ptr.AllocID, e.PayloadOff())
+		ptr.Variant = inst.Variant
 		return nil
 
 	case ir.OpAdd, ir.OpSub, ir.OpMul:
@@ -839,13 +874,14 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 						return v.errf(inst, "argument %s to %s: expected a %s pointer", p.Reg, callee.Name, p.Struct)
 					}
 					if rs.AllocID >= 0 {
-						sf := v.mod.Structs[p.Struct]
-						for i := range sf.Fields {
-							f := &sf.Fields[i]
-							cell, ok := st.getCell(rs.AllocID, f.Offset)
-							if !ok || !cell.Init {
-								return v.errf(inst, "argument %s to %s: field %s is not initialized",
-									p.Reg, callee.Name, f.Name)
+						if sf := v.mod.Structs[p.Struct]; sf != nil {
+							for i := range sf.Fields {
+								f := &sf.Fields[i]
+								cell, ok := st.getCell(rs.AllocID, f.Offset)
+								if !ok || !cell.Init {
+									return v.errf(inst, "argument %s to %s: field %s is not initialized",
+										p.Reg, callee.Name, f.Name)
+								}
 							}
 						}
 					}
@@ -877,7 +913,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		case ir.KindArena:
 			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: callee.RetSize}
 		case ir.KindPtr:
-			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount}
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
 		default:
 			t := scalarRegType(callee.RetScalar)
 			lo, hi := intRange(t)
@@ -1185,7 +1221,7 @@ func structFieldAt(mod *ir.Module, name string, off int64) *ir.Field {
 	return nil
 }
 
-// fieldCell builds the abstract cell for a struct field.
+// fieldCell builds the abstract cell for a struct or variant field.
 func fieldCell(f *ir.Field) RegState {
 	return RegState{
 		Type:      fieldRegType(f),
@@ -1199,6 +1235,61 @@ func fieldCell(f *ir.Field) RegState {
 	}
 }
 
+// fieldState builds a fresh value of a field's type (used when reading a field
+// whose cell only records initialization, e.g. an enum payload).
+func fieldState(f *ir.Field) RegState {
+	rt := fieldRegType(f)
+	out := RegState{Defined: true, Type: rt, RefID: -1, AllocID: -1, AllocSize: f.Size, Struct: f.Struct, Elem: f.Elem, Count: f.Count}
+	if isInt(rt) {
+		out.Min, out.Max = intRange(rt)
+	}
+	return out
+}
+
+// seedNamed seeds the cells of a struct or enum region. A struct seeds every
+// field; an enum seeds only the tag cell (its payload is uninitialized until a
+// variant is selected).
+func (v *Verifier) seedNamed(st *State, alloc int, name string, init bool) error {
+	if sf := v.mod.Structs[name]; sf != nil {
+		for i := range sf.Fields {
+			c := fieldCell(&sf.Fields[i])
+			c.Init = init
+			st.setCell(alloc, sf.Fields[i].Offset, c)
+		}
+		return nil
+	}
+	if v.mod.Enums[name] != nil {
+		st.setCell(alloc, 0, RegState{Type: TypeU8, Declared: true, Init: init})
+		if init {
+			// For a parameter the caller guarantees the active variant's fields
+			// are initialized. Seed one init cell per distinct payload offset;
+			// the concrete type comes from the active variant at read time.
+			seen := map[int64]bool{}
+			for vi := range v.mod.Enums[name].Variants {
+				for fi := range v.mod.Enums[name].Variants[vi].Fields {
+					f := &v.mod.Enums[name].Variants[vi].Fields[fi]
+					if seen[f.Offset] {
+						continue
+					}
+					seen[f.Offset] = true
+					st.setCell(alloc, f.Offset, RegState{Type: TypeUnknown, Declared: true, Init: true})
+				}
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown type %q", name)
+}
+
+// enumFieldAt returns the field of an enum's active variant at offset off.
+func (v *Verifier) enumFieldAt(enumName string, variant int, off int64) *ir.Field {
+	e := v.mod.Enums[enumName]
+	if e == nil {
+		return nil
+	}
+	return e.VariantFieldAt(variant, off)
+}
+
 // accessType returns the abstract type and byte width of an access through ptr.
 func (v *Verifier) accessType(st *State, ptr *RegState, mem ir.Mem, inst ir.Instruction) (RegType, int64, error) {
 	if ptr.Count > 0 {
@@ -1207,7 +1298,20 @@ func (v *Verifier) accessType(st *State, ptr *RegState, mem ir.Mem, inst ir.Inst
 	}
 	if ptr.Struct != "" {
 		if mem.Index.Valid() {
-			return 0, 0, v.errf(inst, "a dynamic offset into a struct pointer is not allowed; use a field")
+			return 0, 0, v.errf(inst, "a dynamic offset into a struct or enum pointer is not allowed; use a field")
+		}
+		if v.mod.Enums[ptr.Struct] != nil {
+			if ptr.Variant < 0 {
+				return 0, 0, v.errf(inst, "enum %s has an unknown active variant; test it with JV first", ptr.Struct)
+			}
+			f := v.enumFieldAt(ptr.Struct, ptr.Variant, mem.Offset)
+			if f == nil {
+				return 0, 0, v.errf(inst, "no field at offset %d in the active variant of %s", mem.Offset, ptr.Struct)
+			}
+			if cell, ok := st.getCell(ptr.AllocID, mem.Offset); ok && cell.Init && cell.Type != TypeUnknown {
+				return cell.Type, width(cell.Type), nil
+			}
+			return fieldRegType(f), f.Width(), nil
 		}
 		if cell, ok := st.getCell(ptr.AllocID, mem.Offset); ok {
 			return cell.Type, width(cell.Type), nil
@@ -1318,6 +1422,51 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 		return nil, v.errf(inst, "use-after-destroy: %s points into a destroyed arena", r)
 	}
 	return rs, nil
+}
+
+// enumPtr fetches a register that holds a pointer to an enum.
+func (v *Verifier) enumPtr(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
+	rs, err := v.dataPtr(st, r, inst)
+	if err != nil {
+		return nil, err
+	}
+	if rs.Struct == "" || v.mod.Enums[rs.Struct] == nil {
+		return nil, v.errf(inst, "expected an enum pointer in %s", r)
+	}
+	return rs, nil
+}
+
+// jvariant refines the active variant along a JV branch: the taken edge knows
+// the variant; the fall-through knows it is not that variant. A test of a
+// variant already known to be inactive can never be taken.
+func (v *Verifier) jvariant(st *State, out map[int]State, inst ir.Instruction) error {
+	ptr, err := v.enumPtr(st, inst.Src[0], inst)
+	if err != nil {
+		return err
+	}
+	e := v.mod.Enums[ptr.Struct]
+	if inst.Variant < 0 || inst.Variant >= len(e.Variants) {
+		return v.errf(inst, "invalid variant of enum %s", ptr.Struct)
+	}
+	if ptr.Variant < 0 || ptr.Variant == inst.Variant {
+		taken := st.clone()
+		taken.Regs[inst.Src[0]].Variant = inst.Variant
+		mergeEdge(out, v.f.Index[inst.Label], taken)
+	}
+	if ptr.Variant == inst.Variant {
+		ptr.Variant = -1
+	}
+	return nil
+}
+
+// clearPayload drops the payload cells of an enum allocation, used when a new
+// variant is selected so the old payload cannot be read.
+func (v *Verifier) clearPayload(st *State, alloc int, payloadOff int64) {
+	for k := range st.Mem {
+		if k.Alloc == alloc && k.Off >= payloadOff {
+			delete(st.Mem, k)
+		}
+	}
 }
 
 // release frees the reference identified by refID: every handle, pointer and
@@ -1463,6 +1612,9 @@ func mergeStates(a, b State) State {
 		if ra.Struct != rb.Struct || ra.Count != rb.Count || ra.Elem != rb.Elem {
 			ra.Struct = ""
 			ra.Count = 0
+		}
+		if ra.Variant != rb.Variant {
+			ra.Variant = -1
 		}
 		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
 			// Different arenas/allocations on the two paths: provenance and
