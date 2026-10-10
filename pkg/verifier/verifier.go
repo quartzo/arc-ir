@@ -146,8 +146,10 @@ func (v *Verifier) entryState() (State, error) {
 			// Capacity is unknown at the callee; allocations from it are still
 			// bounds-checked against their own size.
 			st[p.Reg] = RegState{Defined: true, Type: TypeArena}
+		case ir.KindPtr:
+			st[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, ArenaID: ir.NoReg, AllocSize: p.Size}
 		default:
-			return st, fmt.Errorf("function %s: parameter %s: %s parameters are not yet supported",
+			return st, fmt.Errorf("function %s: parameter %s: unsupported type %s",
 				v.f.Name, p.Reg, p.Kind)
 		}
 	}
@@ -321,6 +323,10 @@ func (v *Verifier) apply(inst ir.Instruction, st *State) error {
 			if rs.Type != want {
 				return v.errf(inst, "argument %s to %s: expected %s, got %s",
 					p.Reg, callee.Name, want, rs.Type)
+			}
+			if p.Kind == ir.KindPtr && rs.AllocSize < p.Size {
+				return v.errf(inst, "argument %s to %s: %d-byte allocation is smaller than the declared ptr(%d)",
+					p.Reg, callee.Name, rs.AllocSize, p.Size)
 			}
 		}
 		// The return value is delivered in r0 as an unknown scalar.

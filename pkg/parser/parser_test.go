@@ -119,6 +119,17 @@ func TestParseFunc(t *testing.T) {
 	}
 }
 
+func TestParsePtrParam(t *testing.T) {
+	prog, err := Parse("func f(r1: ptr(64)):\n    RET\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	p := prog.Instrs[0].Params[0]
+	if p.Kind != ir.KindPtr || p.Size != 64 || p.Reg != 1 {
+		t.Errorf("ptr param parsed as %+v", p)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -130,6 +141,8 @@ func TestParseErrors(t *testing.T) {
 		{"bad scale", "STORE [r1 + r2*3], r3\n", "scale must be"},
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
+		{"ptr without size", "func f(r1: ptr):\n    RET\n", "requires a size"},
+		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

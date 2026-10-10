@@ -214,6 +214,21 @@ func TestVerifyRecursion(t *testing.T) {
 	}
 }
 
+func TestVerifyPointerParam(t *testing.T) {
+	src := "func main:\n" +
+		"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r2 = ARENA_ALLOC r5, 64\n" +
+		"    r1 = r2\n" +
+		"    CALL read\n" +
+		"    RET r0\n" +
+		"func read(r1: ptr(64)):\n" +
+		"    r0 = LOAD [r1]\n" +
+		"    RET r0\n"
+	if _, err := Verify(mustParse(t, src)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
 func TestVerifyFunctionRejections(t *testing.T) {
 	cases := []struct {
 		name string
@@ -239,12 +254,30 @@ func TestVerifyFunctionRejections(t *testing.T) {
 			"undefined function",
 		},
 		{
-			"pointer parameter unsupported",
+			"pointer argument too small",
 			"func main:\n" +
-				"    RET\n" +
-				"func f(r1: ptr):\n" +
-				"    RET\n",
-			"not yet supported",
+				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r2 = ARENA_ALLOC r5, 16\n" +
+				"    r1 = r2\n" +
+				"    CALL f\n" +
+				"    RET r0\n" +
+				"func f(r1: ptr(64)):\n" +
+				"    r0 = LOAD [r1]\n" +
+				"    RET r0\n",
+			"smaller than the declared ptr(64)",
+		},
+		{
+			"out of bounds through pointer parameter",
+			"func main:\n" +
+				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r2 = ARENA_ALLOC r5, 64\n" +
+				"    r1 = r2\n" +
+				"    CALL f\n" +
+				"    RET r0\n" +
+				"func f(r1: ptr(16)):\n" +
+				"    r0 = LOAD [r1 + 32]\n" +
+				"    RET r0\n",
+			"out-of-bounds",
 		},
 	}
 	for _, tc := range cases {

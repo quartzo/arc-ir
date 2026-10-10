@@ -34,6 +34,7 @@ verification and code generation stay simple and direct.
 | — | Register allocator: ARC regs → physical regs | ✅ (spill-on-pressure) |
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
+| — | Pointer parameters (`ptr(size)`) with interprocedural size checks | ✅ |
 
 ## Layout
 
@@ -140,9 +141,11 @@ rec:
     RET r0
 ```
 
-Parameters are typed (`scalar` and `arena` are supported; `ptr` is planned).
-The verifier checks each function independently against its parameter types,
-and checks argument types at every call site.
+Parameters are typed: `scalar`, `arena`, and `ptr(size)` (a data pointer to an
+allocation of `size` bytes). The verifier checks each function independently
+against its parameter types, and at every call site checks argument types and
+that a pointer argument is at least as large as declared. Functions may
+recurse.
 
 ## The Verifier
 
@@ -265,7 +268,7 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Pointer parameters (`ptr`) and returned arenas/pointers.
+- Returned arenas/pointers (non-scalar return values).
 - Interprocedural verification with a bounded call graph (recursion depth).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.

@@ -171,10 +171,20 @@ The calling convention is:
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 
-Parameters are declared with a type: `scalar` and `arena` are supported;
-`ptr` is planned. The verifier checks each function independently against its
-declared parameter types, and checks at every call site that the argument
-registers have the declared types. Functions may recurse.
+Parameters are declared with a type: `scalar`, `arena` and `ptr`. A `ptr`
+parameter carries the size of the allocation it refers to, written
+`ptr(<size>)`:
+
+```
+func read(r1: ptr(64)):
+    r0 = LOAD [r1]
+    RET r0
+```
+
+The verifier checks each function independently against its declared parameter
+types, and at every call site that the argument registers have the declared
+types and that a pointer argument is at least as large as declared. Functions
+may recurse.
 
 A program with no `func` declaration is treated as a single entry function
 named `main`.

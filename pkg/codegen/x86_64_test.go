@@ -106,6 +106,11 @@ func TestCompileAndRun(t *testing.T) {
 			"    JGT r1, 1, rec\n    r0 = 1\n    RET r0\n" +
 			"rec:\n    r2 = SUB r1, 1\n    r3 = r1\n    r1 = r2\n    CALL fact\n" +
 			"    r4 = MUL r3, r0\n    r0 = r4\n    RET r0\n", "120"},
+		{"ptr", "func main:\n" +
+			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, 64\n" +
+			"    r3 = 42\n    STORE [r2], r3\n    r1 = r2\n    CALL read\n" +
+			"    PRINT r0\n    ARENA_DESTROY r5\n    RET r0\n" +
+			"func read(r1: ptr(64)):\n    r0 = LOAD [r1]\n    RET r0\n", "42"},
 	}
 
 	for _, tc := range cases {

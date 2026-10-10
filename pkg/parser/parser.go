@@ -224,7 +224,22 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			if !ok {
 				return ir.Instruction{}, fmt.Errorf("line %d: unknown parameter type %q", lineNo, kindTok)
 			}
-			inst.Params = append(inst.Params, ir.Param{Reg: reg, Kind: kind})
+			param := ir.Param{Reg: reg, Kind: kind}
+			if c.peek() == "(" {
+				c.pos++
+				size, err := parseImm(c, lineNo)
+				if err != nil {
+					return ir.Instruction{}, err
+				}
+				if err := c.expect(")"); err != nil {
+					return ir.Instruction{}, err
+				}
+				param.Size = size
+			}
+			if kind == ir.KindPtr && param.Size <= 0 {
+				return ir.Instruction{}, fmt.Errorf("line %d: ptr parameter %s requires a size, e.g. ptr(64)", lineNo, reg)
+			}
+			inst.Params = append(inst.Params, param)
 			if c.peek() == "," {
 				c.pos++
 			} else {

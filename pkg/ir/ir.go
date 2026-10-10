@@ -76,10 +76,13 @@ func ParseValKind(s string) (ValKind, bool) {
 	return KindScalar, false
 }
 
-// Param is a declared function parameter: a register and its type.
+// Param is a declared function parameter: a register and its type. For
+// KindPtr parameters, Size is the size of the allocation the pointer refers
+// to, which the callee's bounds checks rely on.
 type Param struct {
 	Reg  Register
 	Kind ValKind
+	Size int64
 }
 
 // OpCode enumerates the ARC instruction set.
@@ -310,7 +313,11 @@ type Program struct {
 func formatParams(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
-		parts[i] = fmt.Sprintf("%s: %s", p.Reg, p.Kind)
+		if p.Kind == KindPtr {
+			parts[i] = fmt.Sprintf("%s: ptr(%d)", p.Reg, p.Size)
+		} else {
+			parts[i] = fmt.Sprintf("%s: %s", p.Reg, p.Kind)
+		}
 	}
 	return strings.Join(parts, ", ")
 }
