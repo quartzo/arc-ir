@@ -420,6 +420,58 @@ func TestVerifyOwnership(t *testing.T) {
 	}
 }
 
+func TestVerifyTypedMemory(t *testing.T) {
+	// A stored pointer comes back as a data pointer.
+	valid := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r2 = ARENA_ALLOC r1, 128\n" +
+		"    r3 = ARENA_ALLOC r1, 8\n" +
+		"    r4 = 99\n" +
+		"    STORE [r3], r4\n" +
+		"    STORE [r2], r3\n" +
+		"    r5 = LOAD [r2]\n" +
+		"    r6 = LOAD [r5]\n" +
+		"    PRINT r6\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET r6\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected typed memory to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"store arena in memory",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    STORE [r2], r1\n    ARENA_DESTROY r1\n    RET\n",
+			"cannot store a value of type arena",
+		},
+		{
+			"store pointer at dynamic offset",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    r3 = ARENA_ALLOC r1, 8\n    r4 = 0\n    STORE [r2 + r4*8], r3\n    ARENA_DESTROY r1\n    RET\n",
+			"only scalars may be stored",
+		},
+		{
+			"untyped load is scalar",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    ARENA_DESTROY r1\n    RET\n",
+			"expected data pointer",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

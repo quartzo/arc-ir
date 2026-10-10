@@ -145,6 +145,21 @@ pooled CXL, persistent memory). In the reference runtime every tier shares the
 same backing store; the tier is available to a real runtime for placement
 decisions.
 
+### Typed cells
+
+Memory written through a **static** offset into a locally-known allocation is
+typed: the verifier remembers the type of the value stored at each offset.
+Storing a data pointer and loading it back yields a data pointer, not an
+unknown scalar, so a pointer survives a `STORE`/`LOAD` round-trip.
+
+- Writing an arena handle into memory is not allowed (only scalars and data
+  pointers).
+- Dynamic-offset accesses (`[base + index*scale]`) and accesses through a
+  pointer of unknown provenance are scalar-only, since the verifier cannot name
+  the cell.
+- When an arena is released, typed cells referring to it are invalidated, so a
+  pointer loaded afterwards is dead.
+
 ## 6. Functions and the calling convention
 
 Functions are declared with `func`:

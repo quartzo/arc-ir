@@ -37,6 +37,7 @@ verification and code generation stay simple and direct.
 | — | Pointer parameters (`ptr(size)`) with interprocedural size checks | ✅ |
 | — | Non-scalar returns: `-> arena`, `-> ptr(size)` | ✅ |
 | — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
+| — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 
 ## Layout
 
@@ -187,6 +188,15 @@ func consume(r1: own arena):
 This is what makes use-after-free across calls detectable — the case that plain
 modular type checking missed.
 
+## Typed memory
+
+Memory written through a **static** offset into a locally-known allocation is
+typed: the verifier records the type of each cell. Storing a data pointer and
+loading it back yields a data pointer, so pointers survive a `STORE`/`LOAD`
+round-trip (`examples/typed_mem.arc`). Writing an arena handle into memory is
+rejected, and dynamic-offset or foreign accesses are scalar-only. Releasing an
+arena invalidates typed cells referring to it.
+
 ## The Verifier
 
 The verifier is an abstract interpreter over the control-flow graph. For every
@@ -308,7 +318,7 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Ban recursion / bound the call graph (eBPF-style acyclic calls).
-- Typed memory for bounded regions (so pointers survive a store/load round-trip).
+- Path-sensitive merge of ownership (fewer conservative rejections).
+- Typed cells across function boundaries (via typed `ptr` parameters).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.

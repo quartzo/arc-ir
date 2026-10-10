@@ -117,6 +117,10 @@ func TestCompileAndRun(t *testing.T) {
 			"    ARENA_DESTROY r1\n    RET r4\n" +
 			"func get_arena() -> arena:\n    r0 = ARENA_CREATE DRAM_LOCAL, 64\n    RET r0\n" +
 			"func make(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 64\n    RET r0\n", "99"},
+		{"typed_mem", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n" +
+			"    r3 = ARENA_ALLOC r1, 8\n    r4 = 99\n    STORE [r3], r4\n    STORE [r2], r3\n" +
+			"    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    PRINT r6\n    ARENA_DESTROY r1\n    RET r6\n", "99"},
 	}
 
 	for _, tc := range cases {

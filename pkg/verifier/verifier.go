@@ -5,9 +5,13 @@
 //
 //   - the value type (uninitialized, scalar, arena handle, data pointer),
 //   - for scalars, a signed value range [Min, Max],
-//   - for arena handles and data pointers, the owning arena and allocation
-//     size (used for bounds checks),
-//   - whether the owning arena has been destroyed.
+//   - for arena handles and data pointers, the owning arena, allocation size
+//     and allocation identity,
+//   - whether the owning arena has been destroyed, and whether this function
+//     owns the reference (see the ownership rules below).
+//
+// It also tracks the type of memory cells written through static offsets, so
+// that a stored pointer survives a STORE/LOAD round-trip.
 //
 // States are propagated along edges and merged at join points until a fixpoint
 // is reached. Conditional jumps refine scalar ranges on the taken and
@@ -16,8 +20,8 @@
 // [r2 + r3*8] stays inside its allocation.
 //
 // Rejected programs include: out-of-bounds accesses, use-after-destroy,
-// use of an uninitialized register, type misuse, and any access whose bounds
-// cannot be proven.
+// use of an uninitialized register, type misuse, arena leaks, destroying a
+// borrowed arena, and any access whose bounds cannot be proven.
 package verifier
 
 import (
@@ -55,20 +59,55 @@ func (t RegType) String() string {
 	}
 }
 
-// RegState is the abstract state of one register.
+// RegState is the abstract state of one register or memory cell.
 type RegState struct {
 	Defined   bool
 	Type      RegType
 	Min, Max  int64 // scalar range
 	RefID     int   // arena identity for arena handles and data pointers (-1 = none)
+	AllocID   int   // allocation identity for data pointers (-1 = unknown)
 	Owned     bool  // this function holds the reference and must release it
 	Foreign   bool  // data pointer whose arena provenance is unknown (from a call)
 	AllocSize int64 // reachable bytes (arena capacity or allocation size)
 	Destroyed bool  // owning arena destroyed / reference released
 }
 
-// State is the abstract state of the whole register file.
-type State [ir.NumRegs]RegState
+// MemKey identifies a memory cell: an allocation and a byte offset.
+type MemKey struct {
+	Alloc int
+	Off   int64
+}
+
+// State is the abstract state of the machine: the register file plus the
+// types of memory cells that were written through static offsets.
+type State struct {
+	Regs [ir.NumRegs]RegState
+	Mem  map[MemKey]RegState
+}
+
+// clone returns a copy that shares no mutable storage with s.
+func (s State) clone() State {
+	c := State{Regs: s.Regs}
+	if len(s.Mem) > 0 {
+		c.Mem = make(map[MemKey]RegState, len(s.Mem))
+		for k, v := range s.Mem {
+			c.Mem[k] = v
+		}
+	}
+	return c
+}
+
+func (s *State) setCell(alloc int, off int64, c RegState) {
+	if s.Mem == nil {
+		s.Mem = map[MemKey]RegState{}
+	}
+	s.Mem[MemKey{alloc, off}] = c
+}
+
+func (s *State) getCell(alloc int, off int64) (RegState, bool) {
+	c, ok := s.Mem[MemKey{alloc, off}]
+	return c, ok
+}
 
 // Result is the outcome of a successful verification.
 type Result struct {
@@ -99,7 +138,7 @@ func Verify(prog *ir.Program) (*Result, error) {
 	res := &Result{Funcs: len(m.Funcs)}
 	for _, f := range m.Funcs {
 		v := &Verifier{mod: m, f: f, in: make([]*State, len(f.Blocks))}
-		v.assignRefs()
+		v.assignIDs()
 		entry, err := v.entryState()
 		if err != nil {
 			return nil, err
@@ -111,7 +150,7 @@ func Verify(prog *ir.Program) (*Result, error) {
 			bi := work[0]
 			work = work[1:]
 
-			st := *v.in[bi]
+			st := v.in[bi].clone()
 			succ, err := v.processBlock(bi, &st)
 			if err != nil {
 				return nil, err
@@ -133,24 +172,30 @@ type Verifier struct {
 	f            *ir.Function
 	in           []*State
 	refOf        map[[2]int]int // (block, instr) -> arena RefID
+	allocOf      map[[2]int]int // (block, instr) -> allocation AllocID
 	nextParamRef int
 }
 
-// assignRefs gives every arena-producing instruction a stable reference id.
-// Ids are derived from instruction position so they do not change across
-// fixpoint iterations.
-func (v *Verifier) assignRefs() {
+// assignIDs gives every arena-producing and allocation instruction a stable
+// identity. Ids are derived from instruction position so they do not change
+// across fixpoint iterations.
+func (v *Verifier) assignIDs() {
 	v.refOf = map[[2]int]int{}
+	v.allocOf = map[[2]int]int{}
 	id := 0
 	for bi, b := range v.f.Blocks {
 		for ii, inst := range b.Instrs {
+			key := [2]int{bi, ii}
 			switch inst.Op {
 			case ir.OpArenaCreate:
-				v.refOf[[2]int{bi, ii}] = id
+				v.refOf[key] = id
+				id++
+			case ir.OpArenaAlloc:
+				v.allocOf[key] = id
 				id++
 			case ir.OpCall:
 				if c := v.mod.ByName[inst.Label]; c != nil && c.RetKind == ir.KindArena {
-					v.refOf[[2]int{bi, ii}] = id
+					v.refOf[key] = id
 					id++
 				}
 			}
@@ -169,16 +214,16 @@ func (v *Verifier) entryState() (State, error) {
 	for _, p := range v.f.Params {
 		switch p.Kind {
 		case ir.KindScalar:
-			st[p.Reg] = RegState{Defined: true, Type: TypeScalar, Min: math.MinInt64, Max: math.MaxInt64}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
 		case ir.KindArena:
 			// Capacity is unknown at the callee; allocations from it are still
 			// bounds-checked against their own size. A parameter is borrowed
 			// unless declared "own".
-			st[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, Owned: p.Own}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, Owned: p.Own}
 			v.nextParamRef++
 		case ir.KindPtr:
 			// Provenance is unknown; treat it as possibly aliasing any arena.
-			st[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, Foreign: true, AllocSize: p.Size}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: p.Size}
 		default:
 			return st, fmt.Errorf("function %s: parameter %s: unsupported type %s",
 				v.f.Name, p.Reg, p.Kind)
@@ -203,7 +248,7 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			return out, nil
 
 		case inst.Op == ir.OpJmp:
-			out[v.f.Index[inst.Label]] = *st
+			out[v.f.Index[inst.Label]] = st.clone()
 			return out, nil
 
 		case inst.Op.IsCondJump():
@@ -215,7 +260,7 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			*st = refine(*st, inst, false)
 
 		default:
-			if err := v.apply(inst, st, v.refOf[[2]int{bi, ii}]); err != nil {
+			if err := v.apply(inst, st, v.refOf[[2]int{bi, ii}], v.allocOf[[2]int{bi, ii}]); err != nil {
 				return nil, err
 			}
 		}
@@ -223,7 +268,7 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 
 	// Fall through to the next block, if any.
 	if bi+1 < len(v.f.Blocks) {
-		out[bi+1] = *st
+		out[bi+1] = st.clone()
 	}
 	return out, nil
 }
@@ -232,13 +277,13 @@ func mergeEdge(m map[int]State, target int, st State) {
 	if prev, ok := m[target]; ok {
 		m[target] = mergeStates(prev, st)
 	} else {
-		m[target] = st
+		m[target] = st.clone()
 	}
 }
 
-// apply updates the state for a non-terminator instruction. ref is the arena
-// reference id assigned to an arena-producing instruction.
-func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
+// apply updates the state for a non-terminator instruction. ref and alloc are
+// the identities assigned to arena-producing / allocating instructions.
+func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 	switch inst.Op {
 	case ir.OpMov:
 		if inst.Src[0].Valid() {
@@ -246,17 +291,17 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 			if err != nil {
 				return err
 			}
-			st[inst.Dst] = *src
+			st.Regs[inst.Dst] = *src
 			return nil
 		}
-		st[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, Min: inst.Imm, Max: inst.Imm}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: inst.Imm, Max: inst.Imm}
 		return nil
 
 	case ir.OpArenaCreate:
 		if inst.Size <= 0 {
 			return v.errf(inst, "arena size must be positive, got %d", inst.Size)
 		}
-		st[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, Owned: true, AllocSize: inst.Size}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: inst.Size}
 		return nil
 
 	case ir.OpArenaAlloc:
@@ -270,10 +315,11 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 		if arena.AllocSize > 0 && inst.Size > arena.AllocSize {
 			return v.errf(inst, "allocation of %d bytes exceeds arena capacity %d", inst.Size, arena.AllocSize)
 		}
-		st[inst.Dst] = RegState{
+		st.Regs[inst.Dst] = RegState{
 			Defined:   true,
 			Type:      TypeDataPtr,
 			RefID:     arena.RefID,
+			AllocID:   alloc,
 			AllocSize: inst.Size,
 		}
 		return nil
@@ -303,7 +349,22 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 		if err := v.checkBounds(st, ptr, inst.Mem, inst); err != nil {
 			return err
 		}
-		st[inst.Dst] = RegState{Defined: true, Type: TypeScalar, Min: math.MinInt64, Max: math.MaxInt64}
+		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
+			st.Regs[inst.Dst] = unknownScalar()
+			return nil
+		}
+		if cell, ok := st.getCell(ptr.AllocID, inst.Mem.Offset); ok && cell.Type == TypeDataPtr {
+			st.Regs[inst.Dst] = RegState{
+				Defined:   true,
+				Type:      TypeDataPtr,
+				RefID:     cell.RefID,
+				AllocID:   cell.AllocID,
+				AllocSize: cell.AllocSize,
+				Destroyed: cell.Destroyed,
+			}
+			return nil
+		}
+		st.Regs[inst.Dst] = unknownScalar()
 		return nil
 
 	case ir.OpStore:
@@ -314,8 +375,30 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 		if err := v.checkBounds(st, ptr, inst.Mem, inst); err != nil {
 			return err
 		}
-		if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
+		src, err := v.defined(st, inst.Src[0], inst)
+		if err != nil {
 			return err
+		}
+		// Only static offsets into a locally-known allocation are typed.
+		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
+			if src.Type != TypeScalar {
+				return v.errf(inst, "only scalars may be stored at a dynamic or foreign offset")
+			}
+			return nil
+		}
+		switch src.Type {
+		case TypeScalar:
+			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{Type: TypeScalar, RefID: -1, AllocID: -1})
+		case TypeDataPtr:
+			st.setCell(ptr.AllocID, inst.Mem.Offset, RegState{
+				Type:      TypeDataPtr,
+				RefID:     src.RefID,
+				AllocID:   src.AllocID,
+				AllocSize: src.AllocSize,
+				Destroyed: src.Destroyed,
+			})
+		default:
+			return v.errf(inst, "cannot store a value of type %s in memory", src.Type)
 		}
 		return nil
 
@@ -329,7 +412,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 			return err
 		}
 		min, max := combine(inst.Op, a.Min, a.Max, bMin, bMax)
-		st[inst.Dst] = RegState{Defined: true, Type: TypeScalar, Min: min, Max: max}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: min, Max: max}
 		return nil
 
 	case ir.OpPrint:
@@ -371,11 +454,11 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
 		case ir.KindArena:
-			st[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, Owned: true}
+			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true}
 		case ir.KindPtr:
-			st[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, Foreign: true, AllocSize: callee.RetSize}
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize}
 		default:
-			st[0] = RegState{Defined: true, Type: TypeScalar, RefID: -1, Min: math.MinInt64, Max: math.MaxInt64}
+			st.Regs[0] = unknownScalar()
 		}
 		return nil
 
@@ -385,6 +468,10 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref int) error {
 	default:
 		return v.errf(inst, "unexpected instruction %s", inst.Op)
 	}
+}
+
+func unknownScalar() RegState {
+	return RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
 }
 
 // rhsRange returns the range of the second operand (register or immediate).
@@ -419,14 +506,14 @@ func combine(op ir.OpCode, aMin, aMax, bMin, bMax int64) (int64, int64) {
 // refine narrows the range of the compared register along one branch edge.
 func refine(st State, inst ir.Instruction, taken bool) State {
 	reg := inst.Src[0]
-	rs := st[reg]
+	rs := st.Regs[reg]
 	if !rs.Defined || rs.Type != TypeScalar {
 		return st
 	}
 	_, imm, isReg := inst.RHS()
 	var bMin, bMax int64
 	if isReg {
-		bs := st[inst.Src[1]]
+		bs := st.Regs[inst.Src[1]]
 		if !bs.Defined || bs.Type != TypeScalar {
 			return st
 		}
@@ -469,7 +556,7 @@ func refine(st State, inst ir.Instruction, taken bool) State {
 			rs.Max = min64(rs.Max, satSub(bMax, 1))
 		}
 	}
-	st[reg] = rs
+	st.Regs[reg] = rs
 	return st
 }
 
@@ -509,10 +596,10 @@ func (v *Verifier) defined(st *State, r ir.Register, inst ir.Instruction) (*RegS
 	if !r.Valid() {
 		return nil, v.errf(inst, "missing register operand")
 	}
-	if !st[r].Defined {
+	if !st.Regs[r].Defined {
 		return nil, v.errf(inst, "use of uninitialized register %s", r)
 	}
-	return &st[r], nil
+	return &st.Regs[r], nil
 }
 
 func (v *Verifier) scalar(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
@@ -554,18 +641,24 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 	return rs, nil
 }
 
-// release frees the reference identified by refID: every handle and pointer to
-// that arena becomes invalid. Pointers of unknown provenance (Foreign) are
-// invalidated too, since they may alias the released arena.
+// release frees the reference identified by refID: every handle, pointer and
+// memory cell referring to that arena becomes invalid. Pointers of unknown
+// provenance (Foreign) are invalidated too, since they may alias it.
 func (v *Verifier) release(st *State, refID int) {
-	for r := range st {
-		rs := &st[r]
+	for r := range st.Regs {
+		rs := &st.Regs[r]
 		if !rs.Defined || (rs.Type != TypeArena && rs.Type != TypeDataPtr) {
 			continue
 		}
 		if rs.RefID == refID || rs.Foreign {
 			rs.Destroyed = true
 			rs.Owned = false
+		}
+	}
+	for k, c := range st.Mem {
+		if (c.Type == TypeArena || c.Type == TypeDataPtr) && (c.RefID == refID || c.Foreign) {
+			c.Destroyed = true
+			st.Mem[k] = c
 		}
 	}
 }
@@ -609,7 +702,7 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 
 	// Every owned arena must be released or returned: no leaks.
 	for r := 0; r < ir.NumRegs; r++ {
-		rs := st[r]
+		rs := st.Regs[r]
 		if rs.Defined && rs.Owned && rs.Type == TypeArena && !rs.Destroyed && rs.RefID != returnedRef {
 			return v.errf(inst, "arena %s is never released (leaked)", ir.Register(r))
 		}
@@ -626,29 +719,44 @@ func (v *Verifier) errf(inst ir.Instruction, format string, args ...any) error {
 func (v *Verifier) mergeInto(target int, out State) bool {
 	cur := v.in[target]
 	if cur == nil {
-		c := out
+		c := out.clone()
 		v.in[target] = &c
 		return true
 	}
 	merged := mergeStates(*cur, out)
-	if merged == *cur {
+	if stateEqual(merged, *cur) {
 		return false
 	}
 	v.in[target] = &merged
 	return true
 }
 
-// mergeStates joins two states at a control-flow join. A register is defined
-// afterwards only if it is defined on both incoming edges.
+func stateEqual(a, b State) bool {
+	if a.Regs != b.Regs {
+		return false
+	}
+	if len(a.Mem) != len(b.Mem) {
+		return false
+	}
+	for k, v := range a.Mem {
+		if w, ok := b.Mem[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeStates joins two states at a control-flow join. A register or cell is
+// kept only if it is defined on both incoming edges.
 func mergeStates(a, b State) State {
 	var m State
 	for r := 0; r < ir.NumRegs; r++ {
-		ra, rb := a[r], b[r]
+		ra, rb := a.Regs[r], b.Regs[r]
 		if !ra.Defined || !rb.Defined {
 			continue
 		}
 		if ra.Type != rb.Type {
-			m[r] = RegState{Defined: true, Type: TypeUnknown}
+			m.Regs[r] = RegState{Defined: true, Type: TypeUnknown, RefID: -1, AllocID: -1}
 			continue
 		}
 		ra.Min = min64(ra.Min, rb.Min)
@@ -656,16 +764,48 @@ func mergeStates(a, b State) State {
 		ra.Destroyed = ra.Destroyed || rb.Destroyed
 		ra.Foreign = ra.Foreign || rb.Foreign
 		ra.AllocSize = minAlloc(ra.AllocSize, rb.AllocSize)
-		if ra.RefID != rb.RefID {
-			// Different arenas on the two paths: ownership is unknown.
+		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
+			// Different arenas/allocations on the two paths: provenance and
+			// ownership are unknown.
 			ra.RefID = -1
+			ra.AllocID = -1
 			ra.Owned = false
 		} else {
 			ra.Owned = ra.Owned && rb.Owned
 		}
-		m[r] = ra
+		m.Regs[r] = ra
 	}
+	m.Mem = mergeMem(a.Mem, b.Mem)
 	return m
+}
+
+func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	out := make(map[MemKey]RegState, len(a))
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok {
+			continue
+		}
+		if va.Type != vb.Type {
+			out[k] = RegState{Type: TypeUnknown, RefID: -1, AllocID: -1}
+			continue
+		}
+		va.Destroyed = va.Destroyed || vb.Destroyed
+		va.Foreign = va.Foreign || vb.Foreign
+		va.AllocSize = minAlloc(va.AllocSize, vb.AllocSize)
+		if va.RefID != vb.RefID || va.AllocID != vb.AllocID {
+			va.RefID = -1
+			va.AllocID = -1
+		}
+		out[k] = va
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func minAlloc(a, b int64) int64 {
