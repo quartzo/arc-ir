@@ -54,7 +54,7 @@ func Parse(src string) (*ir.Program, error) {
 		prog.Instrs = append(prog.Instrs, inst)
 	}
 
-	// Resolve struct-typed allocations to a byte size.
+	// Resolve struct-typed allocations and parameters to a byte size.
 	for i := range prog.Instrs {
 		in := &prog.Instrs[i]
 		if in.Op == ir.OpArenaAlloc && in.Struct != "" {
@@ -63,6 +63,18 @@ func Parse(src string) (*ir.Program, error) {
 				return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, in.Struct)
 			}
 			in.Size = st.Size()
+		}
+		if in.Op == ir.OpFunc {
+			for j := range in.Params {
+				p := &in.Params[j]
+				if p.Kind == ir.KindPtr && p.Struct != "" {
+					st, ok := prog.Structs[p.Struct]
+					if !ok {
+						return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, p.Struct)
+					}
+					p.Size = st.Size()
+				}
+			}
 		}
 	}
 	return prog, nil
@@ -427,17 +439,25 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			param := ir.Param{Reg: reg, Kind: kind, Own: own}
 			if c.peek() == "(" {
 				c.pos++
-				size, err := parseImm(c, lineNo)
-				if err != nil {
-					return ir.Instruction{}, err
+				if kind == ir.KindPtr && isIdent(c.peek()) {
+					name, err := c.next()
+					if err != nil {
+						return ir.Instruction{}, err
+					}
+					param.Struct = name
+				} else {
+					size, err := parseImm(c, lineNo)
+					if err != nil {
+						return ir.Instruction{}, err
+					}
+					param.Size = size
 				}
 				if err := c.expect(")"); err != nil {
 					return ir.Instruction{}, err
 				}
-				param.Size = size
 			}
-			if kind == ir.KindPtr && param.Size <= 0 {
-				return ir.Instruction{}, fmt.Errorf("line %d: ptr parameter %s requires a size, e.g. ptr(64)", lineNo, reg)
+			if kind == ir.KindPtr && param.Size <= 0 && param.Struct == "" {
+				return ir.Instruction{}, fmt.Errorf("line %d: ptr parameter %s needs a size or struct, e.g. ptr(64)", lineNo, reg)
 			}
 			inst.Params = append(inst.Params, param)
 			if c.peek() == "," {

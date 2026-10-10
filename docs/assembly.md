@@ -327,6 +327,17 @@ struct Node { next: ptr(8), val: scalar }
   `ptr` field, a smaller allocation) is rejected, and reading a field before it
   is written is rejected (definite initialization).
 
-Structs are compile-time only: at runtime they are just offsets into an
-allocation. The layout currently does not travel across function boundaries;
-`ptr(size)` parameters remain raw pointers.
+A struct layout travels in a `ptr(Struct)` parameter, so the callee can read
+and write the fields:
+
+```
+func read(r1: ptr(Node)):
+    r2 = r1.next
+    r0 = LOAD [r2]
+    RET r0
+```
+
+The caller must pass a pointer of that struct whose fields are all
+initialized. Because the callee may write through the pointer, the caller's
+view of those cells becomes stale after the call (reads yield scalars until the
+fields are stored again).

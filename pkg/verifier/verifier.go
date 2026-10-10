@@ -145,6 +145,16 @@ func (s *State) getCell(alloc int, off int64) (RegState, bool) {
 	return c, ok
 }
 
+// clearAlloc drops every typed cell of an allocation, used when a callee may
+// have written through a pointer to it.
+func (s *State) clearAlloc(alloc int) {
+	for k := range s.Mem {
+		if k.Alloc == alloc {
+			delete(s.Mem, k)
+		}
+	}
+}
+
 func (s *State) getUsed(ref int) int64 {
 	return s.Used[ref]
 }
@@ -216,12 +226,13 @@ func Verify(prog *ir.Program) (*Result, error) {
 
 // Verifier holds the fixpoint state of one function.
 type Verifier struct {
-	mod          *ir.Module
-	f            *ir.Function
-	in           []*State
-	refOf        map[[2]int]int // (block, instr) -> arena RefID
-	allocOf      map[[2]int]int // (block, instr) -> allocation AllocID
-	nextParamRef int
+	mod            *ir.Module
+	f              *ir.Function
+	in             []*State
+	refOf          map[[2]int]int // (block, instr) -> arena RefID
+	allocOf        map[[2]int]int // (block, instr) -> allocation AllocID
+	nextParamRef   int
+	nextParamAlloc int
 }
 
 // assignIDs gives every arena-producing and allocation instruction a stable
@@ -250,6 +261,7 @@ func (v *Verifier) assignIDs() {
 		}
 	}
 	v.nextParamRef = id
+	v.nextParamAlloc = id
 }
 
 // entryState builds the initial register state of a function: empty for the
@@ -271,7 +283,28 @@ func (v *Verifier) entryState() (State, error) {
 			v.nextParamRef++
 		case ir.KindPtr:
 			// Provenance is unknown; treat it as possibly aliasing any arena.
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: p.Size}
+			// The parameter gets its own allocation view so its cells can be
+			// typed inside the callee.
+			alloc := v.nextParamAlloc
+			v.nextParamAlloc++
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct}
+			if p.Struct != "" {
+				sf := v.mod.Structs[p.Struct]
+				if sf == nil {
+					return st, fmt.Errorf("function %s: unknown struct %q", v.f.Name, p.Struct)
+				}
+				for i := range sf.Fields {
+					f := &sf.Fields[i]
+					st.setCell(alloc, int64(i)*8, RegState{
+						Type:      fieldRegType(f.Type),
+						RefID:     -1,
+						AllocID:   -1,
+						AllocSize: f.Size,
+						Declared:  true,
+						Init:      true,
+					})
+				}
+			}
 		default:
 			return st, fmt.Errorf("function %s: parameter %s: unsupported type %s",
 				v.f.Name, p.Reg, p.Kind)
@@ -437,8 +470,8 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				f := &sf.Fields[i]
 				st.setCell(alloc, int64(i)*8, RegState{
 					Type:      fieldRegType(f.Type),
-					RefID:     arena.RefID,
-					AllocID:   alloc,
+					RefID:     -1,
+					AllocID:   -1,
 					AllocSize: f.Size,
 					Declared:  true,
 				})
@@ -637,9 +670,28 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			}
 			switch p.Kind {
 			case ir.KindPtr:
-				if rs.AllocSize < p.Size {
+				if p.Struct != "" {
+					if rs.Struct != p.Struct {
+						return v.errf(inst, "argument %s to %s: expected a %s pointer", p.Reg, callee.Name, p.Struct)
+					}
+					if rs.AllocID >= 0 {
+						sf := v.mod.Structs[p.Struct]
+						for i := range sf.Fields {
+							cell, ok := st.getCell(rs.AllocID, int64(i)*8)
+							if !ok || !cell.Init {
+								return v.errf(inst, "argument %s to %s: field %s is not initialized",
+									p.Reg, callee.Name, sf.Fields[i].Name)
+							}
+						}
+					}
+				} else if rs.AllocSize < p.Size {
 					return v.errf(inst, "argument %s to %s: %d-byte allocation is smaller than the declared ptr(%d)",
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
+				}
+				// The callee may write through the pointer, so the caller's
+				// view of the pointed-to cells becomes stale.
+				if rs.AllocID >= 0 {
+					st.clearAlloc(rs.AllocID)
 				}
 			case ir.KindArena:
 				if p.Size > 0 && !rs.Growable && rs.AllocSize > 0 && rs.AllocSize < p.Size {

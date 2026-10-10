@@ -740,6 +740,51 @@ func TestVerifyStruct(t *testing.T) {
 	}
 }
 
+func TestVerifyPtrStruct(t *testing.T) {
+	valid := "struct Node { next: ptr(8), val: scalar }\n" +
+		"func main:\n" +
+		"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r2 = ARENA_ALLOC r9, Node\n" +
+		"    r3 = ARENA_ALLOC r9, 8\n" +
+		"    r4 = 42\n" +
+		"    STORE [r3], r4\n" +
+		"    r2.next = r3\n" +
+		"    r5 = 7\n" +
+		"    r2.val = r5\n" +
+		"    r1 = r2\n" +
+		"    CALL read\n" +
+		"    PRINT r0\n" +
+		"    ARENA_DESTROY r9\n" +
+		"    RET r0\n" +
+		"func read(r1: ptr(Node)):\n" +
+		"    r2 = r1.next\n" +
+		"    r0 = LOAD [r2]\n" +
+		"    RET r0\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected ptr(Node) program to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"raw ptr for struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, 64\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
+		{"uninitialized struct", "struct N { a: scalar }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

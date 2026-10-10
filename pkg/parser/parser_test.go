@@ -295,6 +295,17 @@ func TestParseStruct(t *testing.T) {
 	}
 }
 
+func TestParsePtrStruct(t *testing.T) {
+	prog, err := Parse("struct Node { next: ptr(8), val: scalar }\nfunc f(r1: ptr(Node)):\n    RET\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	p := prog.Instrs[0].Params[0]
+	if p.Kind != ir.KindPtr || p.Struct != "Node" || p.Size != 16 {
+		t.Errorf("ptr(Node) parsed as %+v", p)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -306,7 +317,7 @@ func TestParseErrors(t *testing.T) {
 		{"bad scale", "STORE [r1 + r2*3], r3\n", "scale must be"},
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
-		{"ptr without size", "func f(r1: ptr):\n    RET\n", "requires a size"},
+		{"ptr without size", "func f(r1: ptr):\n    RET\n", "needs a size"},
 		{"ptr return without size", "func f() -> ptr:\n    RET\n", "requires a size"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
 		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},

@@ -140,10 +140,11 @@ func ParseVecKind(s string) (VecKind, bool) {
 // to, which the callee's bounds checks rely on. Own marks an arena parameter
 // whose ownership is transferred to the callee; otherwise it is borrowed.
 type Param struct {
-	Reg  Register
-	Kind ValKind
-	Size int64
-	Own  bool
+	Reg    Register
+	Kind   ValKind
+	Size   int64
+	Struct string // ptr(Struct): the struct layout the pointer refers to
+	Own    bool
 }
 
 // OpCode enumerates the ARC instruction set.
@@ -486,7 +487,11 @@ func formatParams(params []Param) string {
 		if p.Own {
 			prefix = "own "
 		}
-		parts[i] = fmt.Sprintf("%s: %s%s", p.Reg, prefix, formatType(p.Kind, p.Size))
+		typ := formatType(p.Kind, p.Size)
+		if p.Kind == KindPtr && p.Struct != "" {
+			typ = "ptr(" + p.Struct + ")"
+		}
+		parts[i] = fmt.Sprintf("%s: %s%s", p.Reg, prefix, typ)
 	}
 	return strings.Join(parts, ", ")
 }

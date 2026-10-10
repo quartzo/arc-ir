@@ -145,6 +145,13 @@ func TestCompileAndRun(t *testing.T) {
 			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r6 = r2.next\n" +
 			"    r7 = LOAD [r6]\n    PRINT r7\n    r8 = r2.val\n    PRINT r8\n" +
 			"    ARENA_DESTROY r1\n    RET r7\n", "42\n7"},
+		{"ptr_struct", "struct Node { next: ptr(8), val: scalar }\n" +
+			"func main:\n" +
+			"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r9, Node\n" +
+			"    r3 = ARENA_ALLOC r9, 8\n    r4 = 42\n    STORE [r3], r4\n" +
+			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r1 = r2\n    CALL read\n" +
+			"    PRINT r0\n    ARENA_DESTROY r9\n    RET r0\n" +
+			"func read(r1: ptr(Node)):\n    r2 = r1.next\n    r0 = LOAD [r2]\n    RET r0\n", "42"},
 	}
 
 	for _, tc := range cases {
