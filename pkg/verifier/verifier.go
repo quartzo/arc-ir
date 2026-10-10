@@ -167,9 +167,11 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 		switch {
 		case inst.Op == ir.OpRet:
 			if inst.Src[0].Valid() {
-				if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
+				if err := v.checkReturn(st, inst.Src[0], inst); err != nil {
 					return nil, err
 				}
+			} else if v.f.RetKind != ir.KindScalar {
+				return nil, v.errf(inst, "function %s returns %s but RET has no value", v.f.Name, v.f.RetKind)
 			}
 			return out, nil
 
@@ -329,8 +331,15 @@ func (v *Verifier) apply(inst ir.Instruction, st *State) error {
 					p.Reg, callee.Name, rs.AllocSize, p.Size)
 			}
 		}
-		// The return value is delivered in r0 as an unknown scalar.
-		st[0] = RegState{Defined: true, Type: TypeScalar, Min: math.MinInt64, Max: math.MaxInt64}
+		// The return value is delivered in r0 with the callee's declared type.
+		switch callee.RetKind {
+		case ir.KindArena:
+			st[0] = RegState{Defined: true, Type: TypeArena}
+		case ir.KindPtr:
+			st[0] = RegState{Defined: true, Type: TypeDataPtr, ArenaID: ir.NoReg, AllocSize: callee.RetSize}
+		default:
+			st[0] = RegState{Defined: true, Type: TypeScalar, Min: math.MinInt64, Max: math.MaxInt64}
+		}
 		return nil
 
 	case ir.OpLabel:
@@ -506,6 +515,32 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 		return nil, v.errf(inst, "use-after-destroy: %s points into a destroyed arena", r)
 	}
 	return rs, nil
+}
+
+// checkReturn verifies that a RET value matches the function's declared return
+// type.
+func (v *Verifier) checkReturn(st *State, r ir.Register, inst ir.Instruction) error {
+	rs, err := v.defined(st, r, inst)
+	if err != nil {
+		return err
+	}
+	if rs.Destroyed {
+		return v.errf(inst, "returning %s, which points into a destroyed arena", r)
+	}
+	want := map[ir.ValKind]RegType{
+		ir.KindScalar: TypeScalar,
+		ir.KindArena:  TypeArena,
+		ir.KindPtr:    TypeDataPtr,
+	}[v.f.RetKind]
+	if rs.Type != want {
+		return v.errf(inst, "returning %s, but function %s declares return type %s",
+			rs.Type, v.f.Name, v.f.RetKind)
+	}
+	if v.f.RetKind == ir.KindPtr && rs.AllocSize < v.f.RetSize {
+		return v.errf(inst, "function %s returns ptr(%d), but %s is a %d-byte allocation",
+			v.f.Name, v.f.RetSize, r, rs.AllocSize)
+	}
+	return nil
 }
 
 func (v *Verifier) errf(inst ir.Instruction, format string, args ...any) error {

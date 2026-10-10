@@ -15,6 +15,8 @@ type Block struct {
 type Function struct {
 	Name    string
 	Params  []Param
+	RetKind ValKind
+	RetSize int64
 	Blocks  []*Block
 	Index   map[string]int // local label -> block index
 	Succs   [][]int
@@ -48,7 +50,7 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, Index: map[string]int{}, instrs: r.instrs}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetSize: r.retSize, Index: map[string]int{}, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -87,9 +89,11 @@ func BuildModule(p *Program) (*Module, error) {
 }
 
 type rawFunc struct {
-	name   string
-	params []Param
-	instrs []Instruction
+	name    string
+	params  []Param
+	retKind ValKind
+	retSize int64
+	instrs  []Instruction
 }
 
 func splitFunctions(p *Program) ([]rawFunc, error) {
@@ -99,7 +103,12 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 
 	for _, inst := range p.Instrs {
 		if inst.Op == OpFunc {
-			funcs = append(funcs, rawFunc{name: inst.Label, params: inst.Params})
+			funcs = append(funcs, rawFunc{
+				name:    inst.Label,
+				params:  inst.Params,
+				retKind: inst.RetKind,
+				retSize: inst.RetSize,
+			})
 			cur = len(funcs) - 1
 			continue
 		}

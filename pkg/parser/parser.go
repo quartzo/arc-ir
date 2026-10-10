@@ -93,6 +93,13 @@ func (c *cursor) peek() string {
 	return ""
 }
 
+func (c *cursor) peekAt(i int) string {
+	if c.pos+i < len(c.toks) {
+		return c.toks[c.pos+i]
+	}
+	return ""
+}
+
 func (c *cursor) next() (string, error) {
 	if !c.more() {
 		return "", fmt.Errorf("line %d: unexpected end of line", c.line)
@@ -250,6 +257,34 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			return ir.Instruction{}, err
 		}
 	}
+	// Optional return type: "-> kind" or "-> ptr(size)".
+	if c.peek() == "-" && c.peekAt(1) == ">" {
+		c.pos += 2
+		kindTok, err := c.next()
+		if err != nil {
+			return ir.Instruction{}, err
+		}
+		kind, ok := ir.ParseValKind(kindTok)
+		if !ok {
+			return ir.Instruction{}, fmt.Errorf("line %d: unknown return type %q", lineNo, kindTok)
+		}
+		inst.RetKind = kind
+		if c.peek() == "(" {
+			c.pos++
+			size, err := parseImm(c, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			if err := c.expect(")"); err != nil {
+				return ir.Instruction{}, err
+			}
+			inst.RetSize = size
+		}
+		if kind == ir.KindPtr && inst.RetSize <= 0 {
+			return ir.Instruction{}, fmt.Errorf("line %d: ptr return type requires a size, e.g. -> ptr(64)", lineNo)
+		}
+	}
+
 	if err := c.expect(":"); err != nil {
 		return ir.Instruction{}, err
 	}

@@ -130,6 +130,25 @@ func TestParsePtrParam(t *testing.T) {
 	}
 }
 
+func TestParseReturnType(t *testing.T) {
+	src := "func f() -> arena:\n    RET\n" +
+		"func g() -> ptr(64):\n    RET\n" +
+		"func h() -> scalar:\n    RET\n"
+	prog, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if f := prog.Instrs[0]; f.RetKind != ir.KindArena {
+		t.Errorf("f return = %v", f.RetKind)
+	}
+	if g := prog.Instrs[2]; g.RetKind != ir.KindPtr || g.RetSize != 64 {
+		t.Errorf("g return = %v/%d", g.RetKind, g.RetSize)
+	}
+	if h := prog.Instrs[4]; h.RetKind != ir.KindScalar {
+		t.Errorf("h return = %v", h.RetKind)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -142,6 +161,7 @@ func TestParseErrors(t *testing.T) {
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
 		{"ptr without size", "func f(r1: ptr):\n    RET\n", "requires a size"},
+		{"ptr return without size", "func f() -> ptr:\n    RET\n", "requires a size"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
 	}
 	for _, tc := range cases {

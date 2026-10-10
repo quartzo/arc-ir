@@ -35,6 +35,7 @@ verification and code generation stay simple and direct.
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(size)`) with interprocedural size checks | ✅ |
+| — | Non-scalar returns: `-> arena`, `-> ptr(size)` | ✅ |
 
 ## Layout
 
@@ -146,6 +147,10 @@ allocation of `size` bytes). The verifier checks each function independently
 against its parameter types, and at every call site checks argument types and
 that a pointer argument is at least as large as declared. Functions may
 recurse.
+
+A function may also declare a return type with `->` (`arena` or `ptr(size)`;
+the default is `scalar`). The verifier checks the value returned at each `RET`
+against that type and gives the caller's `r0` the declared type.
 
 ## The Verifier
 
@@ -268,7 +273,6 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Returned arenas/pointers (non-scalar return values).
 - Interprocedural verification with a bounded call graph (recursion depth).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.

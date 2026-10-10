@@ -186,6 +186,23 @@ types, and at every call site that the argument registers have the declared
 types and that a pointer argument is at least as large as declared. Functions
 may recurse.
 
+A function may declare a return type with `->`:
+
+```
+func get_arena() -> arena:
+    r0 = ARENA_CREATE DRAM_LOCAL, 4096
+    RET r0
+
+func make(r1: arena) -> ptr(64):
+    r0 = ARENA_ALLOC r1, 64
+    RET r0
+```
+
+The default return type is `scalar`. The verifier checks at every `RET` that
+the returned register matches the declared return type (and, for `ptr(size)`,
+that the allocation is large enough and still live), and gives the caller's
+`r0` that type after the call.
+
 A program with no `func` declaration is treated as a single entry function
 named `main`.
 

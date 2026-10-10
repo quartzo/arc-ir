@@ -236,6 +236,10 @@ type Instruction struct {
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
+	// RetKind/RetSize hold a function's declared return type (OpFunc only).
+	// The zero value (KindScalar, 0) means a scalar return.
+	RetKind ValKind
+	RetSize int64
 
 	// Line is the 1-based source line, attached by the parser.
 	Line int
@@ -260,7 +264,7 @@ func (i Instruction) String() string {
 	case OpLabel:
 		return i.Label + ":"
 	case OpFunc:
-		return fmt.Sprintf("func %s(%s):", i.Label, formatParams(i.Params))
+		return fmt.Sprintf("func %s(%s)%s:", i.Label, formatParams(i.Params), formatRet(i.RetKind, i.RetSize))
 	case OpCall:
 		return fmt.Sprintf("CALL %s", i.Label)
 	case OpMov:
@@ -313,11 +317,21 @@ type Program struct {
 func formatParams(params []Param) string {
 	parts := make([]string, len(params))
 	for i, p := range params {
-		if p.Kind == KindPtr {
-			parts[i] = fmt.Sprintf("%s: ptr(%d)", p.Reg, p.Size)
-		} else {
-			parts[i] = fmt.Sprintf("%s: %s", p.Reg, p.Kind)
-		}
+		parts[i] = fmt.Sprintf("%s: %s", p.Reg, formatType(p.Kind, p.Size))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func formatType(kind ValKind, size int64) string {
+	if kind == KindPtr {
+		return fmt.Sprintf("ptr(%d)", size)
+	}
+	return kind.String()
+}
+
+func formatRet(kind ValKind, size int64) string {
+	if kind == KindScalar {
+		return ""
+	}
+	return " -> " + formatType(kind, size)
 }

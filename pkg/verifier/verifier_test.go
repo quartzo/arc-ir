@@ -293,6 +293,73 @@ func TestVerifyFunctionRejections(t *testing.T) {
 	}
 }
 
+func TestVerifyNonScalarReturns(t *testing.T) {
+	src := "func main:\n" +
+		"    CALL get_arena\n" +
+		"    r1 = r0\n" +
+		"    CALL make\n" +
+		"    r2 = r0\n" +
+		"    r3 = 99\n" +
+		"    STORE [r2], r3\n" +
+		"    r4 = LOAD [r2]\n" +
+		"    PRINT r4\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET r4\n" +
+		"func get_arena() -> arena:\n" +
+		"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    RET r0\n" +
+		"func make(r1: arena) -> ptr(64):\n" +
+		"    r0 = ARENA_ALLOC r1, 64\n" +
+		"    RET r0\n"
+	if _, err := Verify(mustParse(t, src)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
+func TestVerifyReturnRejections(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"wrong return type",
+			"func main:\n    CALL f\n    r1 = 0\n    RET r1\n" +
+				"func f() -> ptr(64):\n    r0 = 5\n    RET r0\n",
+			"declares return type ptr",
+		},
+		{
+			"returned allocation too small",
+			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
+				"func f(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 16\n    RET r0\n",
+			"16-byte allocation",
+		},
+		{
+			"bare RET for non-scalar",
+			"func main:\n    CALL f\n    r1 = 0\n    RET r1\n" +
+				"func f() -> arena:\n    RET\n",
+			"RET has no value",
+		},
+		{
+			"return into destroyed arena",
+			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
+				"func f(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
+			"destroyed arena",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))
