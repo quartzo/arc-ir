@@ -1,0 +1,9 @@
+# Compiled compiler binary
+/arcc
+
+# Object files
+*.o
+
+# Generated assembly / runtime written when building in-tree
+/*.s
+/arc_runtime.c

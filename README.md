@@ -1,0 +1,271 @@
+# arc-ir
+
+**Arena Register Code** — a small, statically verified, flat-register
+intermediate representation that compiles straight to x86_64 assembly.
+
+ARC is deliberately *not* SSA and does *not* go through LLVM IR. It models a
+real machine: a fixed file of 16 registers (`r0..r15`) that instructions read
+and write in place, and direct jumps between labeled blocks. The compiler
+front end is written in Go and mirrors the eBPF verifier: untrusted programs
+(often produced by an LLVM/LLM) are *proven* memory-safe by an abstract
+interpreter before any machine code is emitted.
+
+```
+ Source (.arc)   →   Parser (Go)   →   ARC assembly   →   Verifier (Go)   →   x86_64 asm   →   Binary
+      text            text/scanner      r0..r15,           abstract           GNU as
+      / LLM                             jmp/branch         interpretation     + C runtime
+```
+
+Going straight to assembly (instead of LLVM IR) is intentional. LLVM IR
+*requires* SSA and phi nodes; recovering SSA from a flat register machine would
+mean reimplementing mem2reg inside this compiler — abstracting only to
+de-abstract. ARC keeps the same topology as the machine it targets, so
+verification and code generation stay simple and direct.
+
+## Status
+
+| Phase | Component | Status |
+|-------|-----------|--------|
+| 1 | Flat-register IR + CFG (`pkg/ir`) | ✅ |
+| 2 | eBPF-style verifier (`pkg/verifier`) | ✅ |
+| 3 | `.arc` syntax parser (`pkg/parser`) | ✅ |
+| 4 | x86_64 GNU assembly backend (`pkg/codegen`) | ✅ |
+| 4 | C support runtime (`pkg/runtime`) | ✅ |
+| — | Register allocator: ARC regs → physical regs | ✅ (spill-on-pressure) |
+| — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
+| — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
+
+## Layout
+
+```
+arc-compiler/
+├── cmd/arcc/            # CLI driver (parse → verify → asm → assemble → run)
+├── pkg/ir/              # registers, instructions, memory operands, CFG
+├── pkg/parser/          # lexer/parser for the .arc syntax (text/scanner)
+├── pkg/verifier/        # abstract interpretation: types, ranges, arenas
+├── pkg/codegen/         # x86_64 GNU assembly backend
+├── pkg/runtime/         # C runtime (arena bump allocator, print), embedded
+├── docs/                # assembly reference (docs/assembly.md)
+├── examples/            # valid and invalid .arc programs
+└── go.mod
+```
+
+## The register file
+
+ARC has 16 registers, `r0..r15`. They are plain 64-bit machine registers with
+no types of their own — the verifier tracks their abstract type per program
+point. The backend assigns each *used* register to a physical register,
+callee-saved first, and spills the remainder to stack slots:
+
+| Priority | Physical register | Notes |
+|----------|-------------------|-------|
+| 1 | `%rbx`, `%r12`, `%r13`, `%r14`, `%r15` | callee-saved |
+| 2 | `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8`, `%r9` | caller-saved |
+| 3 | stack slots | spill when > 11 registers are live |
+| — | `%r10`, `%r11`, `%rax` | reserved scratch |
+| — | `%rsp` | stack pointer |
+
+Because runtime calls clobber caller-saved registers, every ARC register is
+saved to its stack slot around a call and restored afterwards.
+
+## Instruction set
+
+| Instruction | Meaning |
+|-------------|---------|
+| `rdst = <imm>` / `rdst = rsrc` | load immediate / copy |
+| `rdst = ARENA_CREATE <tier>, <size>` | create an arena |
+| `rdst = ARENA_ALLOC rsrc, <size>` | allocate inside an arena |
+| `ARENA_DESTROY rsrc` | free an arena and invalidate its pointers |
+| `rdst = LOAD [mem]` | read a scalar |
+| `STORE [mem], rsrc` | write a scalar |
+| `rdst = ADD rsrc, (<reg> | <imm>)` | also `SUB`, `MUL` |
+| `PRINT rsrc` | print a scalar |
+| `RET rsrc` | return (becomes the process exit code) |
+| `JMP label` | unconditional jump |
+| `J<cc> ra, (<reg> | <imm>), label` | conditional jump: `JEQ`, `JNE`, `JLT`, `JLE`, `JGT`, `JGE` |
+| `CALL name` | call function `name`; result in `r0` |
+| `RET rsrc` | return from the current function (or the process, for `main`) |
+| `label:` | basic-block label |
+
+Memory operands are x86 addressing modes verbatim:
+`[base]`, `[base + offset]`, `[base + index*scale + offset]` with
+`scale ∈ {1,2,4,8}`.
+
+Complete example (`examples/loop.arc`):
+
+```arc
+entry:
+    r1 = ARENA_CREATE CXL_POOLED, 128
+    r2 = ARENA_ALLOC r1, 128
+    r3 = 0
+loop:
+    JGE r3, 10, done
+    STORE [r2 + r3*8], r3
+    r3 = ADD r3, 1
+    JMP loop
+done:
+    r4 = LOAD [r2 + r3*8 - 8]
+    PRINT r4
+    ARENA_DESTROY r1
+    RET r4
+```
+
+## Functions
+
+Functions are declared with `func` and called with `CALL`. Arguments are
+passed in `r1`–`r4`, the return value in `r0`, and every other register is
+preserved across the call (a call is transparent except for `r0`). Functions
+may recurse.
+
+`examples/fact.arc`:
+
+```arc
+func main:
+    r1 = 5
+    CALL fact
+    PRINT r0
+    RET r0
+
+func fact(r1: scalar):
+    JGT r1, 1, rec
+    r0 = 1
+    RET r0
+rec:
+    r2 = SUB r1, 1
+    r3 = r1
+    r1 = r2
+    CALL fact
+    r4 = MUL r3, r0
+    r0 = r4
+    RET r0
+```
+
+Parameters are typed (`scalar` and `arena` are supported; `ptr` is planned).
+The verifier checks each function independently against its parameter types,
+and checks argument types at every call site.
+
+## The Verifier
+
+The verifier is an abstract interpreter over the control-flow graph. For every
+program point it tracks, per register:
+
+```go
+type RegState struct {
+    Defined   bool
+    Type      RegType // Unknown | Scalar | Arena | DataPtr
+    Min, Max  int64   // scalar value range
+    ArenaID   ir.Register
+    AllocSize int64   // arena capacity or allocation size
+    Destroyed bool
+}
+```
+
+States are propagated along edges and merged at join points until a fixpoint is
+reached. Conditional jumps **refine** scalar ranges on each edge: after
+`JGE r3, 10, done` the fall-through knows `r3 < 10`, so the dynamic access
+`[r2 + r3*8]` in `loop.arc` is proven to stay within the 128-byte allocation.
+
+Rejected programs include:
+
+- **Out-of-bounds** — a static or dynamic access whose range cannot be proven
+  to fit `[0, AllocSize)`.
+- **Use-after-destroy** — touching a pointer whose arena was freed.
+- **Double-destroy**, **use of an uninitialized register**, **type misuse**
+  (`LOAD` from a scalar, `ARENA_ALLOC` on a scalar, ...).
+- **Allocation exceeding arena capacity**, **non-positive sizes**.
+
+Errors carry the source line, which lets a generating LLM be fed back in a
+*self-healing* loop.
+
+## Usage
+
+```bash
+go build -o arcc ./cmd/arcc
+
+# Verify without generating code
+./arcc verify examples/loop.arc
+
+# Show the generated x86_64 assembly
+./arcc emit-asm examples/loop.arc
+
+# Generate assembly, assemble, link with the runtime, and run
+./arcc build examples/loop.arc -run
+```
+
+Output of `./arcc build examples/loop.arc -run`:
+
+```
+wrote loop.s and arc_runtime.c
+built loop
+9
+program exited with status 9      # exit code = `RET` value
+```
+
+Invalid examples are rejected before any code is emitted:
+
+```
+$ ./arcc verify examples/invalid_uaf.arc
+arcc: verify error (line 7): use-after-destroy: r2 points into a destroyed arena
+
+$ ./arcc verify examples/invalid_oob.arc
+arcc: verify error (line 6): out-of-bounds: access [r2 + 12] may reach offset 20, exceeding allocation of 16 bytes
+```
+
+### Emitted code (excerpt of `loop.s`)
+
+```asm
+.L_loop:
+    cmpq $10, %r14
+    jge .L_done
+    movq %r14, 0(%r13,%r14,8)     ; STORE [r2 + r3*8], r3
+    movq %r14, %rax
+    addq $1, %rax
+    movq %rax, %r14
+    jmp .L_loop
+.L_done:
+    movq -8(%r13,%r14,8), %r15    ; LOAD [r2 + r3*8 - 8]
+    ...
+```
+
+ARC memory operands map one-to-one onto x86 addressing modes, so each
+`LOAD`/`STORE` becomes a single `mov`.
+
+### Runtime ABI
+
+Generated code links against four C functions in `arc_runtime.c` (System V
+AMD64 ABI):
+
+| Function | Arguments | Returns |
+|----------|-----------|---------|
+| `arc_arena_create` | `tier` (`%rdi`), `size` (`%rsi`) | arena handle (`%rax`) |
+| `arc_arena_alloc` | `arena` (`%rdi`), `size` (`%rsi`) | block base (`%rax`) |
+| `arc_arena_destroy` | `arena` (`%rdi`) | — |
+| `arc_print` | `value` (`%rdi`) | — |
+
+## Tests
+
+```bash
+go test ./...
+```
+
+The tests cover CFG construction, parsing, every verification rejection above,
+range refinement, and both complete pipelines (emit assembly → `cc` → run →
+check output). Tests that need a C compiler/assembler are skipped when it is
+not installed.
+
+## Where AI Connects
+
+With a working verifier, the LLM becomes the primary generation tool:
+
+1. The LLM receives a high-level specification.
+2. The LLM emits `.arc` assembly.
+3. `arcc verify` runs the verifier.
+4. On rejection, the message (with line number) is fed back into the LLM's
+   context, which fixes the program automatically — a *self-healing* loop.
+
+## Next Steps
+
+- Pointer parameters (`ptr`) and returned arenas/pointers.
+- Interprocedural verification with a bounded call graph (recursion depth).
+- Real CXL/persistent-memory arenas via `mmap` in the runtime.
+- Register-pressure-aware allocation and peephole optimization.
