@@ -39,6 +39,8 @@ const (
 	TypeUnknown RegType = iota
 	// TypeScalar is a 64-bit integer with an associated range.
 	TypeScalar
+	// TypeF32 is a 32-bit float (in a vector register).
+	TypeF32
 	// TypeF64 is a 64-bit float (in a vector register).
 	TypeF64
 	// TypeArena is an arena handle.
@@ -52,6 +54,8 @@ func (t RegType) String() string {
 	switch t {
 	case TypeScalar:
 		return "scalar"
+	case TypeF32:
+		return "f32"
 	case TypeF64:
 		return "f64"
 	case TypeArena:
@@ -458,44 +462,33 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if !inst.Dst.IsVec() {
 			return v.errf(inst, "a float result requires a vector register")
 		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
+		ft := TypeF64
+		if inst.F32 {
+			ft = TypeF32
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: ft, RefID: -1, AllocID: -1}
 		return nil
 
 	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
-		if !inst.Dst.IsVec() {
-			return v.errf(inst, "a float result requires a vector register")
-		}
-		if _, err := v.float(st, inst.Src[0], inst); err != nil {
-			return err
-		}
-		if _, err := v.float(st, inst.Src[1], inst); err != nil {
-			return err
-		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
-		return nil
+		return v.floatBin(st, inst, TypeF64)
+	case ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
+		return v.floatBin(st, inst, TypeF32)
 
 	case ir.OpIToF:
-		if !inst.Dst.IsVec() {
-			return v.errf(inst, "a float result requires a vector register")
-		}
-		if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
-			return err
-		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
-		return nil
+		return v.iToF(st, inst, TypeF64)
+	case ir.OpIToF32:
+		return v.iToF(st, inst, TypeF32)
 
 	case ir.OpFToI:
-		if !inst.Dst.IsGP() {
-			return v.errf(inst, "FTOI result requires a general register")
-		}
-		if _, err := v.float(st, inst.Src[0], inst); err != nil {
-			return err
-		}
-		st.Regs[inst.Dst] = unknownScalar()
-		return nil
+		return v.fToI(st, inst, TypeF64)
+	case ir.OpF32ToI:
+		return v.fToI(st, inst, TypeF32)
 
 	case ir.OpPrintF:
-		_, err := v.float(st, inst.Src[0], inst)
+		_, err := v.floatOf(st, inst.Src[0], TypeF64, inst)
+		return err
+	case ir.OpPrintF32:
+		_, err := v.floatOf(st, inst.Src[0], TypeF32, inst)
 		return err
 
 	case ir.OpPrint:
@@ -700,15 +693,51 @@ func (v *Verifier) scalar(st *State, r ir.Register, inst ir.Instruction) (*RegSt
 	return rs, nil
 }
 
-func (v *Verifier) float(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
+func (v *Verifier) floatOf(st *State, r ir.Register, ft RegType, inst ir.Instruction) (*RegState, error) {
 	rs, err := v.defined(st, r, inst)
 	if err != nil {
 		return nil, err
 	}
-	if rs.Type != TypeF64 {
-		return nil, v.errf(inst, "expected f64 in %s, got %s", r, rs.Type)
+	if rs.Type != ft {
+		return nil, v.errf(inst, "expected %s in %s, got %s", ft, r, rs.Type)
 	}
 	return rs, nil
+}
+
+func (v *Verifier) floatBin(st *State, inst ir.Instruction, ft RegType) error {
+	if !inst.Dst.IsVec() {
+		return v.errf(inst, "a float result requires a vector register")
+	}
+	if _, err := v.floatOf(st, inst.Src[0], ft, inst); err != nil {
+		return err
+	}
+	if _, err := v.floatOf(st, inst.Src[1], ft, inst); err != nil {
+		return err
+	}
+	st.Regs[inst.Dst] = RegState{Defined: true, Type: ft, RefID: -1, AllocID: -1}
+	return nil
+}
+
+func (v *Verifier) iToF(st *State, inst ir.Instruction, ft RegType) error {
+	if !inst.Dst.IsVec() {
+		return v.errf(inst, "a float result requires a vector register")
+	}
+	if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
+		return err
+	}
+	st.Regs[inst.Dst] = RegState{Defined: true, Type: ft, RefID: -1, AllocID: -1}
+	return nil
+}
+
+func (v *Verifier) fToI(st *State, inst ir.Instruction, ft RegType) error {
+	if !inst.Dst.IsGP() {
+		return v.errf(inst, "%s result requires a general register", inst.Op)
+	}
+	if _, err := v.floatOf(st, inst.Src[0], ft, inst); err != nil {
+		return err
+	}
+	st.Regs[inst.Dst] = unknownScalar()
+	return nil
 }
 
 func (v *Verifier) arena(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {

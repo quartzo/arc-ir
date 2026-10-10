@@ -149,15 +149,20 @@ execution continues with the next instruction.
 | Instruction | Semantics |
 |-------------|-----------|
 | `vdst = <float literal>` | `vdst = literal` (`f64`) |
+| `vdst = f32(<literal>)` | `vdst = literal` (`f32`) |
 | `vdst = FADD va, vb` | `vdst = va + vb` (`f64`; also `FSUB`, `FMUL`, `FDIV`) |
+| `vdst = FADD32 va, vb` | `vdst = va + vb` (`f32`; also `FSUB32`, `FMUL32`, `FDIV32`) |
 | `vdst = ITOF rsrc` | integer to `f64` |
+| `vdst = ITOF32 rsrc` | integer to `f32` |
 | `rdst = FTOI vsrc` | `f64` to integer (truncating) |
+| `rdst = F32TOI vsrc` | `f32` to integer (truncating) |
 | `PRINTF vsrc` | print an `f64` (newline-terminated) |
+| `PRINTF32 vsrc` | print an `f32` (newline-terminated) |
 
-Float values live in vector registers (`v0`–`v15`). The verifier enforces that
-float operands are `f64` and that conversions are explicit; a float can never
-be used as a pointer or an index, so floats do not affect the memory-safety
-guarantee.
+Float values live in vector registers (`v0`–`v15`). `f32` and `f64` never mix
+implicitly; the verifier enforces that operands match the instruction's width
+and that conversions are explicit. A float can never be used as a pointer or an
+index, so floats do not affect the memory-safety guarantee.
 
 ## 5. Memory model
 

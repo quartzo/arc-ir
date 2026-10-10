@@ -183,6 +183,21 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 			}
 			inst.Op = ir.OpFConst
 			inst.FImm = v
+		} else if mnem == "f32" && c.peekAt(1) == "(" {
+			if !dst.IsVec() {
+				return ir.Instruction{}, fmt.Errorf("line %d: a float literal requires a vector register (v0..v15)", lineNo)
+			}
+			c.pos += 2 // consume "f32" "("
+			v, err := parseFloat(c, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			if err := c.expect(")"); err != nil {
+				return ir.Instruction{}, err
+			}
+			inst.Op = ir.OpFConst
+			inst.F32 = true
+			inst.FImm = v
 		} else if isIdent(mnem) {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown instruction %q", lineNo, mnem)
 		} else {
@@ -432,7 +447,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			return inst, err
 		}
 
-	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv, ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
 		a, err := c.reg(lineNo)
 		if err != nil {
 			return inst, err
@@ -447,7 +462,7 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		}
 		inst.Src[1] = b
 
-	case ir.OpIToF, ir.OpFToI, ir.OpPrintF:
+	case ir.OpIToF, ir.OpIToF32, ir.OpFToI, ir.OpF32ToI, ir.OpPrintF, ir.OpPrintF32:
 		r, err := c.reg(lineNo)
 		if err != nil {
 			return inst, err

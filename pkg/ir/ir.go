@@ -123,15 +123,22 @@ const (
 	OpAdd          // rdst = ADD ra, (rb | imm)
 	OpSub          // rdst = SUB ra, (rb | imm)
 	OpMul          // rdst = MUL ra, (rb | imm)
-	OpFConst       // vdst = <float literal>
-	OpFAdd         // vdst = FADD vsrc, vsrc
-	OpFSub         // vdst = FSUB vsrc, vsrc
-	OpFMul         // vdst = FMUL vsrc, vsrc
-	OpFDiv         // vdst = FDIV vsrc, vsrc
-	OpIToF         // vdst = ITOF rsrc   (integer to float)
-	OpFToI         // rdst = FTOI vsrc   (float to integer)
+	OpFConst       // vdst = <float literal>       (f64, or f32 when F32 is set)
+	OpFAdd         // vdst = FADD vsrc, vsrc       (f64)
+	OpFSub         // vdst = FSUB vsrc, vsrc       (f64)
+	OpFMul         // vdst = FMUL vsrc, vsrc       (f64)
+	OpFDiv         // vdst = FDIV vsrc, vsrc       (f64)
+	OpF32Add       // vdst = FADD32 vsrc, vsrc     (f32)
+	OpF32Sub       // vdst = FSUB32 vsrc, vsrc     (f32)
+	OpF32Mul       // vdst = FMUL32 vsrc, vsrc     (f32)
+	OpF32Div       // vdst = FDIV32 vsrc, vsrc     (f32)
+	OpIToF         // vdst = ITOF rsrc   (integer to f64)
+	OpIToF32       // vdst = ITOF32 rsrc (integer to f32)
+	OpFToI         // rdst = FTOI vsrc   (f64 to integer)
+	OpF32ToI       // rdst = F32TOI vsrc (f32 to integer)
 	OpPrint        // PRINT rsrc
-	OpPrintF       // PRINTF vsrc
+	OpPrintF       // PRINTF vsrc        (f64)
+	OpPrintF32     // PRINTF32 vsrc      (f32)
 	OpRet          // RET rsrc
 	OpCall         // CALL name
 
@@ -162,10 +169,17 @@ var opNames = map[OpCode]string{
 	OpFSub:         "FSUB",
 	OpFMul:         "FMUL",
 	OpFDiv:         "FDIV",
+	OpF32Add:       "FADD32",
+	OpF32Sub:       "FSUB32",
+	OpF32Mul:       "FMUL32",
+	OpF32Div:       "FDIV32",
 	OpIToF:         "ITOF",
+	OpIToF32:       "ITOF32",
 	OpFToI:         "FTOI",
+	OpF32ToI:       "F32TOI",
 	OpPrint:        "PRINT",
 	OpPrintF:       "PRINTF",
+	OpPrintF32:     "PRINTF32",
 	OpRet:          "RET",
 	OpCall:         "CALL",
 	OpJmp:          "JMP",
@@ -216,7 +230,9 @@ func (o OpCode) IsTerminator() bool {
 func (o OpCode) HasDest() bool {
 	switch o {
 	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpAdd, OpSub, OpMul,
-		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv, OpIToF, OpFToI:
+		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv,
+		OpF32Add, OpF32Sub, OpF32Mul, OpF32Div,
+		OpIToF, OpIToF32, OpFToI, OpF32ToI:
 		return true
 	default:
 		return false
@@ -268,6 +284,7 @@ type Instruction struct {
 	Src      [2]Register
 	Imm      int64
 	FImm     float64 // OpFConst: the float literal
+	F32      bool    // OpFConst: the literal is an f32
 	Mem      Mem
 	Label    string
 	Tier     TopologyTier
@@ -332,15 +349,16 @@ func (i Instruction) String() string {
 		}
 		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], rhs)
 	case OpFConst:
+		if i.F32 {
+			return fmt.Sprintf("%sf32(%v)", dst, i.FImm)
+		}
 		return fmt.Sprintf("%s%v", dst, i.FImm)
-	case OpFAdd, OpFSub, OpFMul, OpFDiv:
+	case OpFAdd, OpFSub, OpFMul, OpFDiv, OpF32Add, OpF32Sub, OpF32Mul, OpF32Div:
 		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], i.Src[1])
-	case OpIToF:
-		return fmt.Sprintf("%sITOF %s", dst, i.Src[0])
-	case OpFToI:
-		return fmt.Sprintf("%sFTOI %s", dst, i.Src[0])
-	case OpPrintF:
-		return fmt.Sprintf("PRINTF %s", i.Src[0])
+	case OpIToF, OpIToF32, OpFToI, OpF32ToI:
+		return fmt.Sprintf("%s%s %s", dst, i.Op, i.Src[0])
+	case OpPrintF, OpPrintF32:
+		return fmt.Sprintf("%s %s", i.Op, i.Src[0])
 	case OpPrint:
 		return fmt.Sprintf("PRINT %s", i.Src[0])
 	case OpRet:

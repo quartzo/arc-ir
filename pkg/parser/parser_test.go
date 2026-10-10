@@ -209,6 +209,28 @@ func TestParseFloat(t *testing.T) {
 	}
 }
 
+func TestParseF32(t *testing.T) {
+	prog, err := Parse("v1 = f32(2.5)\nv2 = FADD32 v1, v1\nr1 = F32TOI v2\nv3 = ITOF32 r1\nPRINTF32 v3\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if in := prog.Instrs[0]; in.Op != ir.OpFConst || !in.F32 || in.FImm != 2.5 {
+		t.Errorf("f32 const parsed as %+v", in)
+	}
+	if in := prog.Instrs[1]; in.Op != ir.OpF32Add {
+		t.Errorf("FADD32 parsed as %+v", in)
+	}
+	if in := prog.Instrs[2]; in.Op != ir.OpF32ToI {
+		t.Errorf("F32TOI parsed as %+v", in)
+	}
+	if in := prog.Instrs[3]; in.Op != ir.OpIToF32 {
+		t.Errorf("ITOF32 parsed as %+v", in)
+	}
+	if in := prog.Instrs[4]; in.Op != ir.OpPrintF32 {
+		t.Errorf("PRINTF32 parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

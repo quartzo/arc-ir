@@ -290,12 +290,22 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.store(scratch3, inst.Dst)
 
 	case ir.OpFConst:
-		x.movImm(int64(math.Float64bits(inst.FImm)), scratch3)
-		if phys := x.physOf[inst.Dst]; phys != "" {
-			x.line("\tmovq %s, %s", scratch3, phys)
+		if inst.F32 {
+			x.movImm(int64(math.Float32bits(float32(inst.FImm))), scratch3)
+			if phys := x.physOf[inst.Dst]; phys != "" {
+				x.line("\tmovd %%eax, %s", phys)
+			} else {
+				x.line("\tmovd %%eax, %s", xmmScratch1)
+				x.store(xmmScratch1, inst.Dst)
+			}
 		} else {
-			x.line("\tmovq %s, %s", scratch3, xmmScratch1)
-			x.line("\tmovsd %s, %d(%%rbp)", xmmScratch1, x.slot[inst.Dst])
+			x.movImm(int64(math.Float64bits(inst.FImm)), scratch3)
+			if phys := x.physOf[inst.Dst]; phys != "" {
+				x.line("\tmovq %s, %s", scratch3, phys)
+			} else {
+				x.line("\tmovq %s, %s", scratch3, xmmScratch1)
+				x.store(xmmScratch1, inst.Dst)
+			}
 		}
 
 	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
@@ -328,6 +338,37 @@ func (x *x64) inst(inst ir.Instruction) error {
 		if src != "%xmm0" {
 			x.line("\tmovsd %s, %%xmm0", src)
 		}
+		x.line("\tcall arc_print_f64")
+		x.restoreAll()
+
+	case ir.OpF32Add, ir.OpF32Sub, ir.OpF32Mul, ir.OpF32Div:
+		a := x.loadF(inst.Src[0], xmmScratch1)
+		if a != xmmScratch1 {
+			x.line("\tmovss %s, %s", a, xmmScratch1)
+		}
+		b := x.loadF(inst.Src[1], xmmScratch2)
+		f32mnem := map[ir.OpCode]string{ir.OpF32Add: "addss", ir.OpF32Sub: "subss", ir.OpF32Mul: "mulss", ir.OpF32Div: "divss"}[inst.Op]
+		x.line("\t%s %s, %s", f32mnem, b, xmmScratch1)
+		x.store(xmmScratch1, inst.Dst)
+
+	case ir.OpIToF32:
+		src := x.load(inst.Src[0], scratch1)
+		if phys := x.physOf[inst.Dst]; phys != "" {
+			x.line("\tcvtsi2ssq %s, %s", src, phys)
+		} else {
+			x.line("\tcvtsi2ssq %s, %s", src, xmmScratch1)
+			x.store(xmmScratch1, inst.Dst)
+		}
+
+	case ir.OpF32ToI:
+		src := x.loadF(inst.Src[0], xmmScratch1)
+		x.line("\tcvttss2siq %s, %s", src, scratch3)
+		x.store(scratch3, inst.Dst)
+
+	case ir.OpPrintF32:
+		x.saveAll()
+		src := x.loadF(inst.Src[0], xmmScratch1)
+		x.line("\tcvtss2sd %s, %%xmm0", src)
 		x.line("\tcall arc_print_f64")
 		x.restoreAll()
 
