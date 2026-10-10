@@ -652,6 +652,39 @@ func TestVerifyF32(t *testing.T) {
 	}
 }
 
+func TestVerifySIMD(t *testing.T) {
+	valid := "func main:\n" +
+		"    v1 = f32x4(1.0, 2.0, 3.0, 4.0)\n" +
+		"    v2 = f32x4(10.0, 20.0, 30.0, 40.0)\n" +
+		"    v3 = VADD.f32x4 v1, v2\n" +
+		"    PRINTV.f32x4 v3\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected simd program to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"mixing kinds", "func main:\n    v1 = f32x4(1.0)\n    v2 = i32x4(1)\n    v3 = VADD.f32x4 v1, v2\n    RET\n", "expected f32x4"},
+		{"print kind mismatch", "func main:\n    v1 = i32x4(1)\n    PRINTV.f32x4 v1\n    RET\n", "expected f32x4"},
+		{"scalar op on vector", "func main:\n    v1 = f32x4(1.0)\n    r1 = ADD v1, v1\n    RET\n", "expected scalar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

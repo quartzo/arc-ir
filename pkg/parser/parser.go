@@ -19,6 +19,7 @@ package parser
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"text/scanner"
@@ -157,8 +158,18 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 
 	mnem := c.peek()
 
+	// A vector mnemonic may carry its element type as a suffix: "VADD.f32x4".
+	base := mnem
+	var vec ir.VecKind
+	hasVec := false
+	if b, suffix, ok := strings.Cut(mnem, "."); ok {
+		if k, kok := ir.ParseVecKind(strings.ToLower(suffix)); kok {
+			base, vec, hasVec = b, k, true
+		}
+	}
+
 	// Not a mnemonic: this is a MOV written as "rdst = <reg|imm>".
-	op, isOp := ir.OpFromName(strings.ToUpper(mnem))
+	op, isOp := ir.OpFromName(strings.ToUpper(base))
 	if !isOp {
 		if !dst.Valid() {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown instruction %q", lineNo, mnem)
@@ -198,6 +209,22 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 			inst.Op = ir.OpFConst
 			inst.F32 = true
 			inst.FImm = v
+		} else if (mnem == "f32x4" || mnem == "i32x4") && c.peekAt(1) == "(" {
+			if !dst.IsVec() {
+				return ir.Instruction{}, fmt.Errorf("line %d: a vector literal requires a vector register (v0..v15)", lineNo)
+			}
+			k, _ := ir.ParseVecKind(mnem)
+			c.pos += 2 // consume "f32x4" "("
+			lanes, err := parseLanes(c, k, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			if err := c.expect(")"); err != nil {
+				return ir.Instruction{}, err
+			}
+			inst.Op = ir.OpVConst
+			inst.Vec = k
+			inst.Lanes = lanes
 		} else if isIdent(mnem) {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown instruction %q", lineNo, mnem)
 		} else {
@@ -217,6 +244,9 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	inst, err := parseOp(c, op, dst, lineNo)
 	if err != nil {
 		return ir.Instruction{}, err
+	}
+	if hasVec {
+		inst.Vec = vec
 	}
 	if op.HasDest() && !inst.Dst.Valid() {
 		return ir.Instruction{}, fmt.Errorf("line %d: %s requires a destination register", lineNo, op)
@@ -469,6 +499,28 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		}
 		inst.Src[0] = r
 
+	case ir.OpVAdd, ir.OpVSub, ir.OpVMul, ir.OpVDiv:
+		a, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[0] = a
+		if err := c.expect(","); err != nil {
+			return inst, err
+		}
+		b, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[1] = b
+
+	case ir.OpPrintV:
+		r, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[0] = r
+
 	case ir.OpCall:
 		name, err := c.next()
 		if err != nil {
@@ -682,6 +734,42 @@ func isFloatToken(tok string) bool {
 	}
 	_, err := strconv.ParseFloat(tok, 64)
 	return err == nil
+}
+
+// parseLanes parses the lane list of a vector literal, broadcasting a single
+// lane to all four.
+func parseLanes(c *cursor, k ir.VecKind, lineNo int) ([]int64, error) {
+	var lanes []int64
+	for {
+		if k == ir.VecF32x4 {
+			v, err := parseFloat(c, lineNo)
+			if err != nil {
+				return nil, err
+			}
+			lanes = append(lanes, int64(math.Float32bits(float32(v))))
+		} else {
+			v, err := parseImm(c, lineNo)
+			if err != nil {
+				return nil, err
+			}
+			lanes = append(lanes, v)
+		}
+		if c.peek() == "," {
+			c.pos++
+			continue
+		}
+		break
+	}
+	if len(lanes) == 1 {
+		b := lanes[0]
+		for len(lanes) < 4 {
+			lanes = append(lanes, b)
+		}
+	}
+	if len(lanes) != 4 {
+		return nil, fmt.Errorf("line %d: a vector literal needs 1 or 4 lanes, got %d", lineNo, len(lanes))
+	}
+	return lanes, nil
 }
 
 func parseRegister(tok string, lineNo int) (ir.Register, error) {

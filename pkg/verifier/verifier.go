@@ -43,6 +43,10 @@ const (
 	TypeF32
 	// TypeF64 is a 64-bit float (in a vector register).
 	TypeF64
+	// TypeF32x4 is a 128-bit vector of four f32.
+	TypeF32x4
+	// TypeI32x4 is a 128-bit vector of four i32.
+	TypeI32x4
 	// TypeArena is an arena handle.
 	TypeArena
 	// TypeDataPtr is a pointer into an arena allocation.
@@ -58,6 +62,10 @@ func (t RegType) String() string {
 		return "f32"
 	case TypeF64:
 		return "f64"
+	case TypeF32x4:
+		return "f32x4"
+	case TypeI32x4:
+		return "i32x4"
 	case TypeArena:
 		return "arena"
 	case TypeDataPtr:
@@ -491,6 +499,31 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		_, err := v.floatOf(st, inst.Src[0], TypeF32, inst)
 		return err
 
+	case ir.OpVConst:
+		if !inst.Dst.IsVec() {
+			return v.errf(inst, "a vector result requires a vector register")
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: vecType(inst.Vec), RefID: -1, AllocID: -1}
+		return nil
+	case ir.OpVAdd, ir.OpVSub, ir.OpVMul, ir.OpVDiv:
+		if !inst.Dst.IsVec() {
+			return v.errf(inst, "a vector result requires a vector register")
+		}
+		vt := vecType(inst.Vec)
+		if _, err := v.vecOf(st, inst.Src[0], vt, inst); err != nil {
+			return err
+		}
+		if _, err := v.vecOf(st, inst.Src[1], vt, inst); err != nil {
+			return err
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: vt, RefID: -1, AllocID: -1}
+		return nil
+	case ir.OpPrintV:
+		if _, err := v.vecOf(st, inst.Src[0], vecType(inst.Vec), inst); err != nil {
+			return err
+		}
+		return nil
+
 	case ir.OpPrint:
 		_, err := v.scalar(st, inst.Src[0], inst)
 		return err
@@ -700,6 +733,24 @@ func (v *Verifier) floatOf(st *State, r ir.Register, ft RegType, inst ir.Instruc
 	}
 	if rs.Type != ft {
 		return nil, v.errf(inst, "expected %s in %s, got %s", ft, r, rs.Type)
+	}
+	return rs, nil
+}
+
+func vecType(k ir.VecKind) RegType {
+	if k == ir.VecI32x4 {
+		return TypeI32x4
+	}
+	return TypeF32x4
+}
+
+func (v *Verifier) vecOf(st *State, r ir.Register, want RegType, inst ir.Instruction) (*RegState, error) {
+	rs, err := v.defined(st, r, inst)
+	if err != nil {
+		return nil, err
+	}
+	if rs.Type != want {
+		return nil, v.errf(inst, "expected %s in %s, got %s", want, r, rs.Type)
 	}
 	return rs, nil
 }

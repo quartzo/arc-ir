@@ -164,6 +164,19 @@ implicitly; the verifier enforces that operands match the instruction's width
 and that conversions are explicit. A float can never be used as a pointer or an
 index, so floats do not affect the memory-safety guarantee.
 
+### 4.8 SIMD
+
+| Instruction | Semantics |
+|-------------|-----------|
+| `vdst = f32x4(a, b, c, d)` | 128-bit vector of four `f32` (`f32x4(x)` broadcasts) |
+| `vdst = i32x4(a, b, c, d)` | 128-bit vector of four `i32` |
+| `vdst = VADD.<kind> va, vb` | packed add (`VSUB`, `VMUL`; `VDIV` for float kinds) |
+| `PRINTV.<kind> vsrc` | print the four lanes, one per line |
+
+`<kind>` is `f32x4` or `i32x4`. Vectors live in vector registers; the verifier
+tracks the vector type (element kind and width) but not per-lane values, and
+requires the two operands of an operation to have the same kind.
+
 ## 5. Memory model
 
 All pointers passed to `LOAD`/`STORE` must originate from `ARENA_ALLOC`. An

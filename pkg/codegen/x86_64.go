@@ -56,10 +56,12 @@ type x64 struct {
 	symbol map[string]string      // function name -> assembly symbol
 
 	// per-function state
-	fn    *ir.Function
-	used  []ir.Register
-	slot  map[ir.Register]int
-	frame int
+	fn         *ir.Function
+	used       []ir.Register
+	slot       map[ir.Register]int
+	frame      int
+	vecScratch int // rbp-relative offset of a 16-byte scratch for vector prints
+	consts     [][16]byte
 
 	b strings.Builder
 }
@@ -146,6 +148,7 @@ func (x *x64) emit() (string, error) {
 			return "", err
 		}
 	}
+	x.emitRodata()
 	x.line(".section .note.GNU-stack,\"\",@progbits")
 	return x.b.String(), nil
 }
@@ -207,13 +210,20 @@ func (x *x64) prepare(f *ir.Function) {
 	x.used = used
 
 	x.slot = map[ir.Register]int{}
-	for i, r := range used {
-		x.slot[r] = -8 * (i + 1)
+	off := 0
+	for _, r := range used {
+		if r.IsVec() {
+			off += 16
+		} else {
+			off += 8
+		}
+		x.slot[r] = -off
 	}
-	x.frame = len(used) * 8
+	x.frame = off + 16
 	if x.frame%16 != 8 {
 		x.frame += 8
 	}
+	x.vecScratch = -(off + 16)
 }
 
 func (x *x64) inst(inst ir.Instruction) error {
@@ -372,6 +382,41 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.line("\tcall arc_print_f64")
 		x.restoreAll()
 
+	case ir.OpVConst:
+		lbl := x.vecConstLabel(inst.Lanes)
+		if phys := x.physOf[inst.Dst]; phys != "" {
+			x.line("\tmovdqu %s(%%rip), %s", lbl, phys)
+		} else {
+			x.line("\tmovdqu %s(%%rip), %s", lbl, xmmScratch1)
+			x.store(xmmScratch1, inst.Dst)
+		}
+
+	case ir.OpVAdd, ir.OpVSub, ir.OpVMul, ir.OpVDiv:
+		a := x.loadF(inst.Src[0], xmmScratch1)
+		if a != xmmScratch1 {
+			x.line("\tmovdqu %s, %s", a, xmmScratch1)
+		}
+		b := x.loadF(inst.Src[1], xmmScratch2)
+		x.line("\t%s %s, %s", vecMnem(inst.Op, inst.Vec), b, xmmScratch1)
+		x.store(xmmScratch1, inst.Dst)
+
+	case ir.OpPrintV:
+		x.saveAll()
+		src := x.loadF(inst.Src[0], xmmScratch1)
+		x.line("\tmovdqu %s, %d(%%rbp)", src, x.vecScratch)
+		for i := 0; i < 4; i++ {
+			off := x.vecScratch + i*4
+			if inst.Vec == ir.VecF32x4 {
+				x.line("\tmovss %d(%%rbp), %%xmm0", off)
+				x.line("\tcvtss2sd %%xmm0, %%xmm0")
+				x.line("\tcall arc_print_f64")
+			} else {
+				x.line("\tmovslq %d(%%rbp), %%rdi", off)
+				x.line("\tcall arc_print")
+			}
+		}
+		x.restoreAll()
+
 	case ir.OpJmp:
 		x.line("\tjmp %s", x.blockLabel(inst.Label))
 
@@ -420,7 +465,7 @@ func (x *x64) load(r ir.Register, scratch string) string {
 		return phys
 	}
 	if r.IsVec() {
-		x.line("\tmovsd %d(%%rbp), %s", x.slot[r], xmmScratch1)
+		x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], xmmScratch1)
 		return xmmScratch1
 	}
 	x.line("\tmovq %d(%%rbp), %s", x.slot[r], scratch)
@@ -432,7 +477,7 @@ func (x *x64) loadF(r ir.Register, scratch string) string {
 	if phys := x.physOf[r]; phys != "" {
 		return phys
 	}
-	x.line("\tmovsd %d(%%rbp), %s", x.slot[r], scratch)
+	x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], scratch)
 	return scratch
 }
 
@@ -441,7 +486,7 @@ func (x *x64) store(src string, r ir.Register) {
 	if phys := x.physOf[r]; phys != "" {
 		if phys != src {
 			if r.IsVec() {
-				x.line("\tmovsd %s, %s", src, phys)
+				x.line("\tmovdqu %s, %s", src, phys)
 			} else {
 				x.line("\tmovq %s, %s", src, phys)
 			}
@@ -449,7 +494,7 @@ func (x *x64) store(src string, r ir.Register) {
 		return
 	}
 	if r.IsVec() {
-		x.line("\tmovsd %s, %d(%%rbp)", src, x.slot[r])
+		x.line("\tmovdqu %s, %d(%%rbp)", src, x.slot[r])
 	} else {
 		x.line("\tmovq %s, %d(%%rbp)", src, x.slot[r])
 	}
@@ -476,7 +521,7 @@ func (x *x64) saveAll() {
 	for _, r := range x.used {
 		if phys := x.physOf[r]; phys != "" {
 			if r.IsVec() {
-				x.line("\tmovsd %s, %d(%%rbp)", phys, x.slot[r])
+				x.line("\tmovdqu %s, %d(%%rbp)", phys, x.slot[r])
 			} else {
 				x.line("\tmovq %s, %d(%%rbp)", phys, x.slot[r])
 			}
@@ -488,7 +533,7 @@ func (x *x64) restoreAll() {
 	for _, r := range x.used {
 		if phys := x.physOf[r]; phys != "" {
 			if r.IsVec() {
-				x.line("\tmovsd %d(%%rbp), %s", x.slot[r], phys)
+				x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], phys)
 			} else {
 				x.line("\tmovq %d(%%rbp), %s", x.slot[r], phys)
 			}
@@ -537,4 +582,53 @@ func sanitize(label string) string {
 		}
 	}
 	return b.String()
+}
+
+func vecMnem(op ir.OpCode, k ir.VecKind) string {
+	if k == ir.VecI32x4 {
+		switch op {
+		case ir.OpVSub:
+			return "psubd"
+		case ir.OpVMul:
+			return "pmulld"
+		default:
+			return "paddd"
+		}
+	}
+	switch op {
+	case ir.OpVSub:
+		return "subps"
+	case ir.OpVMul:
+		return "mulps"
+	case ir.OpVDiv:
+		return "divps"
+	default:
+		return "addps"
+	}
+}
+
+func (x *x64) vecConstLabel(lanes []int64) string {
+	var c [16]byte
+	for i := 0; i < 4 && i < len(lanes); i++ {
+		v := uint32(lanes[i])
+		c[i*4] = byte(v)
+		c[i*4+1] = byte(v >> 8)
+		c[i*4+2] = byte(v >> 16)
+		c[i*4+3] = byte(v >> 24)
+	}
+	x.consts = append(x.consts, c)
+	return fmt.Sprintf(".LCV%d", len(x.consts)-1)
+}
+
+func (x *x64) emitRodata() {
+	if len(x.consts) == 0 {
+		return
+	}
+	x.line(".section .rodata")
+	for i, c := range x.consts {
+		x.line(".LCV%d:", i)
+		x.line("\t.byte %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d",
+			c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7],
+			c[8], c[9], c[10], c[11], c[12], c[13], c[14], c[15])
+	}
 }

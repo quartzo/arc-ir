@@ -131,6 +131,9 @@ func TestCompileAndRun(t *testing.T) {
 		{"f32", "func main:\n" +
 			"    v1 = f32(2.5)\n    v2 = f32(4.0)\n    v3 = FMUL32 v1, v2\n    v4 = FADD32 v3, v1\n" +
 			"    PRINTF32 v4\n    r1 = F32TOI v4\n    PRINT r1\n    RET r1\n", "12.5\n12"},
+		{"simd", "func main:\n" +
+			"    v1 = f32x4(1.0, 2.0, 3.0, 4.0)\n    v2 = f32x4(10.0, 20.0, 30.0, 40.0)\n" +
+			"    v3 = VADD.f32x4 v1, v2\n    PRINTV.f32x4 v3\n    RET\n", "11\n22\n33\n44"},
 	}
 
 	for _, tc := range cases {

@@ -231,6 +231,25 @@ func TestParseF32(t *testing.T) {
 	}
 }
 
+func TestParseSIMD(t *testing.T) {
+	prog, err := Parse("v1 = f32x4(1.0, 2.0, 3.0, 4.0)\nv2 = i32x4(7)\nv3 = VADD.f32x4 v1, v1\nPRINTV.i32x4 v2\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if in := prog.Instrs[0]; in.Op != ir.OpVConst || in.Vec != ir.VecF32x4 || len(in.Lanes) != 4 {
+		t.Errorf("f32x4 const parsed as %+v", in)
+	}
+	if in := prog.Instrs[1]; in.Op != ir.OpVConst || in.Vec != ir.VecI32x4 || len(in.Lanes) != 4 || in.Lanes[3] != 7 {
+		t.Errorf("i32x4 broadcast parsed as %+v", in)
+	}
+	if in := prog.Instrs[2]; in.Op != ir.OpVAdd || in.Vec != ir.VecF32x4 {
+		t.Errorf("VADD.f32x4 parsed as %+v", in)
+	}
+	if in := prog.Instrs[3]; in.Op != ir.OpPrintV || in.Vec != ir.VecI32x4 {
+		t.Errorf("PRINTV.i32x4 parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

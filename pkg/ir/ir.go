@@ -15,6 +15,7 @@ package ir
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -95,6 +96,39 @@ func ParseValKind(s string) (ValKind, bool) {
 	return KindScalar, false
 }
 
+// VecKind is the element type of a SIMD vector.
+type VecKind int
+
+const (
+	// VecF32x4 is four 32-bit floats.
+	VecF32x4 VecKind = iota
+	// VecI32x4 is four 32-bit integers.
+	VecI32x4
+)
+
+var vecKindNames = map[VecKind]string{
+	VecF32x4: "f32x4",
+	VecI32x4: "i32x4",
+}
+
+// String returns the textual name of the vector kind.
+func (k VecKind) String() string {
+	if n, ok := vecKindNames[k]; ok {
+		return n
+	}
+	return "vec(?)"
+}
+
+// ParseVecKind resolves a textual vector kind.
+func ParseVecKind(s string) (VecKind, bool) {
+	for k, n := range vecKindNames {
+		if n == s {
+			return k, true
+		}
+	}
+	return VecF32x4, false
+}
+
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
 // to, which the callee's bounds checks rely on. Own marks an arena parameter
@@ -139,6 +173,12 @@ const (
 	OpPrint        // PRINT rsrc
 	OpPrintF       // PRINTF vsrc        (f64)
 	OpPrintF32     // PRINTF32 vsrc      (f32)
+	OpVConst       // vdst = f32x4(...) | i32x4(...)
+	OpVAdd         // vdst = VADD.<kind> vsrc, vsrc
+	OpVSub         // vdst = VSUB.<kind> vsrc, vsrc
+	OpVMul         // vdst = VMUL.<kind> vsrc, vsrc
+	OpVDiv         // vdst = VDIV.<kind> vsrc, vsrc
+	OpPrintV       // PRINTV vsrc
 	OpRet          // RET rsrc
 	OpCall         // CALL name
 
@@ -180,6 +220,12 @@ var opNames = map[OpCode]string{
 	OpPrint:        "PRINT",
 	OpPrintF:       "PRINTF",
 	OpPrintF32:     "PRINTF32",
+	OpVConst:       "VCONST",
+	OpVAdd:         "VADD",
+	OpVSub:         "VSUB",
+	OpVMul:         "VMUL",
+	OpVDiv:         "VDIV",
+	OpPrintV:       "PRINTV",
 	OpRet:          "RET",
 	OpCall:         "CALL",
 	OpJmp:          "JMP",
@@ -232,7 +278,8 @@ func (o OpCode) HasDest() bool {
 	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpAdd, OpSub, OpMul,
 		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv,
 		OpF32Add, OpF32Sub, OpF32Mul, OpF32Div,
-		OpIToF, OpIToF32, OpFToI, OpF32ToI:
+		OpIToF, OpIToF32, OpFToI, OpF32ToI,
+		OpVConst, OpVAdd, OpVSub, OpVMul, OpVDiv:
 		return true
 	default:
 		return false
@@ -285,6 +332,8 @@ type Instruction struct {
 	Imm      int64
 	FImm     float64 // OpFConst: the float literal
 	F32      bool    // OpFConst: the literal is an f32
+	Vec      VecKind // OpVConst / VADD..: the vector element type
+	Lanes    []int64 // OpVConst: lane values (32-bit each)
 	Mem      Mem
 	Label    string
 	Tier     TopologyTier
@@ -359,6 +408,12 @@ func (i Instruction) String() string {
 		return fmt.Sprintf("%s%s %s", dst, i.Op, i.Src[0])
 	case OpPrintF, OpPrintF32:
 		return fmt.Sprintf("%s %s", i.Op, i.Src[0])
+	case OpVConst:
+		return fmt.Sprintf("%s%s(%s)", dst, i.Vec, formatLanes(i))
+	case OpVAdd, OpVSub, OpVMul, OpVDiv:
+		return fmt.Sprintf("%s%s.%s %s, %s", dst, i.Op, i.Vec, i.Src[0], i.Src[1])
+	case OpPrintV:
+		return fmt.Sprintf("PRINTV %s", i.Src[0])
 	case OpPrint:
 		return fmt.Sprintf("PRINT %s", i.Src[0])
 	case OpRet:
@@ -409,4 +464,16 @@ func formatRet(kind ValKind, size int64) string {
 		return ""
 	}
 	return " -> " + formatType(kind, size)
+}
+
+func formatLanes(i Instruction) string {
+	parts := make([]string, len(i.Lanes))
+	for j, v := range i.Lanes {
+		if i.Vec == VecF32x4 {
+			parts[j] = fmt.Sprintf("%v", math.Float32frombits(uint32(v)))
+		} else {
+			parts[j] = fmt.Sprintf("%d", int32(v))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
