@@ -39,6 +39,8 @@ const (
 	TypeUnknown RegType = iota
 	// TypeScalar is a 64-bit integer with an associated range.
 	TypeScalar
+	// TypeF64 is a 64-bit float (in a vector register).
+	TypeF64
 	// TypeArena is an arena handle.
 	TypeArena
 	// TypeDataPtr is a pointer into an arena allocation.
@@ -50,6 +52,8 @@ func (t RegType) String() string {
 	switch t {
 	case TypeScalar:
 		return "scalar"
+	case TypeF64:
+		return "f64"
 	case TypeArena:
 		return "arena"
 	case TypeDataPtr:
@@ -450,6 +454,50 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: min, Max: max}
 		return nil
 
+	case ir.OpFConst:
+		if !inst.Dst.IsVec() {
+			return v.errf(inst, "a float result requires a vector register")
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
+		return nil
+
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+		if !inst.Dst.IsVec() {
+			return v.errf(inst, "a float result requires a vector register")
+		}
+		if _, err := v.float(st, inst.Src[0], inst); err != nil {
+			return err
+		}
+		if _, err := v.float(st, inst.Src[1], inst); err != nil {
+			return err
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
+		return nil
+
+	case ir.OpIToF:
+		if !inst.Dst.IsVec() {
+			return v.errf(inst, "a float result requires a vector register")
+		}
+		if _, err := v.scalar(st, inst.Src[0], inst); err != nil {
+			return err
+		}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
+		return nil
+
+	case ir.OpFToI:
+		if !inst.Dst.IsGP() {
+			return v.errf(inst, "FTOI result requires a general register")
+		}
+		if _, err := v.float(st, inst.Src[0], inst); err != nil {
+			return err
+		}
+		st.Regs[inst.Dst] = unknownScalar()
+		return nil
+
+	case ir.OpPrintF:
+		_, err := v.float(st, inst.Src[0], inst)
+		return err
+
 	case ir.OpPrint:
 		_, err := v.scalar(st, inst.Src[0], inst)
 		return err
@@ -648,6 +696,17 @@ func (v *Verifier) scalar(st *State, r ir.Register, inst ir.Instruction) (*RegSt
 	}
 	if rs.Type != TypeScalar {
 		return nil, v.errf(inst, "expected scalar in %s, got %s", r, rs.Type)
+	}
+	return rs, nil
+}
+
+func (v *Verifier) float(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
+	rs, err := v.defined(st, r, inst)
+	if err != nil {
+		return nil, err
+	}
+	if rs.Type != TypeF64 {
+		return nil, v.errf(inst, "expected f64 in %s, got %s", r, rs.Type)
 	}
 	return rs, nil
 }

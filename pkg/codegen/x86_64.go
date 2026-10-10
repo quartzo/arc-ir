@@ -30,10 +30,19 @@ var arcPhysRegs = []string{
 	"%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9",
 }
 
+// vector registers handed out to ARC vector registers; %xmm14 and %xmm15 are
+// reserved as scratch.
+var xmmRegs = []string{
+	"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7",
+	"%xmm8", "%xmm9", "%xmm10", "%xmm11", "%xmm12", "%xmm13",
+}
+
 const (
-	scratch1 = "%r10"
-	scratch2 = "%r11"
-	scratch3 = "%rax"
+	scratch1    = "%r10"
+	scratch2    = "%r11"
+	scratch3    = "%rax"
+	xmmScratch1 = "%xmm14"
+	xmmScratch2 = "%xmm15"
 )
 
 type loc struct {
@@ -71,18 +80,30 @@ func EmitAsm(prog *ir.Program) (string, error) {
 func RuntimeSource() string { return runtime.Source }
 
 func (x *x64) assignGlobals() {
-	all := map[ir.Register]bool{}
+	var gp, vec []ir.Register
+	seen := map[ir.Register]bool{}
 	for _, f := range x.mod.Funcs {
-		funcRegs(f, func(r ir.Register) { all[r] = true })
+		funcRegs(f, func(r ir.Register) {
+			if r.Valid() && !seen[r] {
+				seen[r] = true
+				if r.IsVec() {
+					vec = append(vec, r)
+				} else {
+					gp = append(gp, r)
+				}
+			}
+		})
 	}
-	regs := make([]ir.Register, 0, len(all))
-	for r := range all {
-		regs = append(regs, r)
-	}
-	sort.Slice(regs, func(i, j int) bool { return regs[i] < regs[j] })
-	for i, r := range regs {
+	sort.Slice(gp, func(i, j int) bool { return gp[i] < gp[j] })
+	sort.Slice(vec, func(i, j int) bool { return vec[i] < vec[j] })
+	for i, r := range gp {
 		if i < len(arcPhysRegs) {
 			x.physOf[r] = arcPhysRegs[i]
+		}
+	}
+	for i, r := range vec {
+		if i < len(xmmRegs) {
+			x.physOf[r] = xmmRegs[i]
 		}
 	}
 
@@ -268,6 +289,48 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.line("\t%s %s, %s", mnem, rhs, scratch3)
 		x.store(scratch3, inst.Dst)
 
+	case ir.OpFConst:
+		x.movImm(int64(math.Float64bits(inst.FImm)), scratch3)
+		if phys := x.physOf[inst.Dst]; phys != "" {
+			x.line("\tmovq %s, %s", scratch3, phys)
+		} else {
+			x.line("\tmovq %s, %s", scratch3, xmmScratch1)
+			x.line("\tmovsd %s, %d(%%rbp)", xmmScratch1, x.slot[inst.Dst])
+		}
+
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+		a := x.loadF(inst.Src[0], xmmScratch1)
+		if a != xmmScratch1 {
+			x.line("\tmovsd %s, %s", a, xmmScratch1)
+		}
+		b := x.loadF(inst.Src[1], xmmScratch2)
+		fmnem := map[ir.OpCode]string{ir.OpFAdd: "addsd", ir.OpFSub: "subsd", ir.OpFMul: "mulsd", ir.OpFDiv: "divsd"}[inst.Op]
+		x.line("\t%s %s, %s", fmnem, b, xmmScratch1)
+		x.store(xmmScratch1, inst.Dst)
+
+	case ir.OpIToF:
+		src := x.load(inst.Src[0], scratch1)
+		if phys := x.physOf[inst.Dst]; phys != "" {
+			x.line("\tcvtsi2sdq %s, %s", src, phys)
+		} else {
+			x.line("\tcvtsi2sdq %s, %s", src, xmmScratch1)
+			x.line("\tmovsd %s, %d(%%rbp)", xmmScratch1, x.slot[inst.Dst])
+		}
+
+	case ir.OpFToI:
+		src := x.loadF(inst.Src[0], xmmScratch1)
+		x.line("\tcvttsd2siq %s, %s", src, scratch3)
+		x.store(scratch3, inst.Dst)
+
+	case ir.OpPrintF:
+		x.saveAll()
+		src := x.loadF(inst.Src[0], xmmScratch1)
+		if src != "%xmm0" {
+			x.line("\tmovsd %s, %%xmm0", src)
+		}
+		x.line("\tcall arc_print_f64")
+		x.restoreAll()
+
 	case ir.OpJmp:
 		x.line("\tjmp %s", x.blockLabel(inst.Label))
 
@@ -315,7 +378,20 @@ func (x *x64) load(r ir.Register, scratch string) string {
 	if phys := x.physOf[r]; phys != "" {
 		return phys
 	}
+	if r.IsVec() {
+		x.line("\tmovsd %d(%%rbp), %s", x.slot[r], xmmScratch1)
+		return xmmScratch1
+	}
 	x.line("\tmovq %d(%%rbp), %s", x.slot[r], scratch)
+	return scratch
+}
+
+// loadF is load for a float operand into a chosen XMM scratch.
+func (x *x64) loadF(r ir.Register, scratch string) string {
+	if phys := x.physOf[r]; phys != "" {
+		return phys
+	}
+	x.line("\tmovsd %d(%%rbp), %s", x.slot[r], scratch)
 	return scratch
 }
 
@@ -323,11 +399,19 @@ func (x *x64) load(r ir.Register, scratch string) string {
 func (x *x64) store(src string, r ir.Register) {
 	if phys := x.physOf[r]; phys != "" {
 		if phys != src {
-			x.line("\tmovq %s, %s", src, phys)
+			if r.IsVec() {
+				x.line("\tmovsd %s, %s", src, phys)
+			} else {
+				x.line("\tmovq %s, %s", src, phys)
+			}
 		}
 		return
 	}
-	x.line("\tmovq %s, %d(%%rbp)", src, x.slot[r])
+	if r.IsVec() {
+		x.line("\tmovsd %s, %d(%%rbp)", src, x.slot[r])
+	} else {
+		x.line("\tmovq %s, %d(%%rbp)", src, x.slot[r])
+	}
 }
 
 func (x *x64) movImm(imm int64, physReg string) {
@@ -350,7 +434,11 @@ func (x *x64) movImmToDst(imm int64, dst ir.Register) {
 func (x *x64) saveAll() {
 	for _, r := range x.used {
 		if phys := x.physOf[r]; phys != "" {
-			x.line("\tmovq %s, %d(%%rbp)", phys, x.slot[r])
+			if r.IsVec() {
+				x.line("\tmovsd %s, %d(%%rbp)", phys, x.slot[r])
+			} else {
+				x.line("\tmovq %s, %d(%%rbp)", phys, x.slot[r])
+			}
 		}
 	}
 }
@@ -358,7 +446,11 @@ func (x *x64) saveAll() {
 func (x *x64) restoreAll() {
 	for _, r := range x.used {
 		if phys := x.physOf[r]; phys != "" {
-			x.line("\tmovq %d(%%rbp), %s", x.slot[r], phys)
+			if r.IsVec() {
+				x.line("\tmovsd %d(%%rbp), %s", x.slot[r], phys)
+			} else {
+				x.line("\tmovq %d(%%rbp), %s", x.slot[r], phys)
+			}
 		}
 	}
 }

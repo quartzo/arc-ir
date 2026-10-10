@@ -581,6 +581,42 @@ func TestVerifyGrowableArena(t *testing.T) {
 	}
 }
 
+func TestVerifyFloat(t *testing.T) {
+	valid := "func main:\n" +
+		"    v1 = 2.5\n" +
+		"    v2 = 4.0\n" +
+		"    v3 = FMUL v1, v2\n" +
+		"    v4 = FADD v3, v1\n" +
+		"    PRINTF v4\n" +
+		"    r1 = FTOI v4\n" +
+		"    RET r1\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected float program to verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"float as pointer", "func main:\n    v1 = 1.0\n    r1 = LOAD [v1]\n    RET\n", "expected data pointer"},
+		{"FADD on scalar", "func main:\n    r1 = 1\n    v1 = FADD r1, r1\n    RET\n", "expected f64"},
+		{"ITOF on float", "func main:\n    v1 = 1.0\n    v2 = ITOF v1\n    RET\n", "expected scalar"},
+		{"FTOI into vector", "func main:\n    v1 = 1.0\n    v2 = FTOI v1\n    RET\n", "requires a general register"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

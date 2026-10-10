@@ -59,7 +59,7 @@ func stripComment(line string) string {
 func tokenize(line string) ([]string, error) {
 	var s scanner.Scanner
 	s.Init(strings.NewReader(line))
-	s.Mode = scanner.ScanIdents | scanner.ScanInts
+	s.Mode = scanner.ScanIdents | scanner.ScanInts | scanner.ScanFloats
 	s.Whitespace = 1<<'\t' | 1<<'\r' | 1<<' '
 	s.IsIdentRune = func(ch rune, i int) bool {
 		return ch == '_' || ch == '.' || unicode.IsLetter(ch) || unicode.IsDigit(ch)
@@ -173,6 +173,16 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 				return ir.Instruction{}, err
 			}
 			inst.Src[0] = r
+		} else if isFloatToken(mnem) || ((mnem == "-" || mnem == "+") && isFloatToken(c.peekAt(1))) {
+			if !dst.IsVec() {
+				return ir.Instruction{}, fmt.Errorf("line %d: a float literal requires a vector register (v0..v15)", lineNo)
+			}
+			v, err := parseFloat(c, lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			inst.Op = ir.OpFConst
+			inst.FImm = v
 		} else if isIdent(mnem) {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown instruction %q", lineNo, mnem)
 		} else {
@@ -422,6 +432,28 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			return inst, err
 		}
 
+	case ir.OpFAdd, ir.OpFSub, ir.OpFMul, ir.OpFDiv:
+		a, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[0] = a
+		if err := c.expect(","); err != nil {
+			return inst, err
+		}
+		b, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[1] = b
+
+	case ir.OpIToF, ir.OpFToI, ir.OpPrintF:
+		r, err := c.reg(lineNo)
+		if err != nil {
+			return inst, err
+		}
+		inst.Src[0] = r
+
 	case ir.OpCall:
 		name, err := c.next()
 		if err != nil {
@@ -605,19 +637,54 @@ func parseImm(c *cursor, lineNo int) (int64, error) {
 	return sign * v, nil
 }
 
+// parseFloat parses an optional sign followed by a float literal.
+func parseFloat(c *cursor, lineNo int) (float64, error) {
+	sign := 1.0
+	if c.peek() == "-" {
+		sign = -1
+		c.pos++
+	} else if c.peek() == "+" {
+		c.pos++
+	}
+	t, err := c.next()
+	if err != nil {
+		return 0, err
+	}
+	v, err := strconv.ParseFloat(t, 64)
+	if err != nil {
+		return 0, fmt.Errorf("line %d: expected float, got %q", lineNo, t)
+	}
+	return sign * v, nil
+}
+
+// isFloatToken reports whether a token is a float literal (not an integer).
+func isFloatToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	if _, err := strconv.ParseInt(tok, 10, 64); err == nil {
+		return false
+	}
+	_, err := strconv.ParseFloat(tok, 64)
+	return err == nil
+}
+
 func parseRegister(tok string, lineNo int) (ir.Register, error) {
 	if !isRegister(tok) {
 		return ir.NoReg, fmt.Errorf("line %d: expected register, got %q", lineNo, tok)
 	}
 	n, err := strconv.Atoi(tok[1:])
-	if err != nil || n < 0 || n >= ir.NumRegs {
-		return ir.NoReg, fmt.Errorf("line %d: register %q out of range (r0..r%d)", lineNo, tok, ir.NumRegs-1)
+	if err != nil || n < 0 || n >= ir.NumGP {
+		return ir.NoReg, fmt.Errorf("line %d: register %q out of range (r0..r15 or v0..v15)", lineNo, tok)
+	}
+	if tok[0] == 'v' {
+		return ir.Register(ir.NumGP + n), nil
 	}
 	return ir.Register(n), nil
 }
 
 func isRegister(tok string) bool {
-	if len(tok) < 2 || tok[0] != 'r' {
+	if len(tok) < 2 || (tok[0] != 'r' && tok[0] != 'v') {
 		return false
 	}
 	for _, ch := range tok[1:] {

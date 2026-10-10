@@ -1,10 +1,11 @@
 // Package ir defines the ARC flat-register assembly IR.
 //
-// Unlike an SSA IR, ARC models a real machine: a fixed file of 16 registers
-// (r0..r15) that instructions read and write in place, plus direct jumps
-// between labeled blocks. There are no virtual registers, no phi nodes, and no
-// basic-block value merging — the control flow is exactly the control flow of
-// the emitted machine code.
+// Unlike an SSA IR, ARC models a real machine: two register files that
+// instructions read and write in place — 16 general-purpose registers
+// (r0..r15) and 16 vector registers (v0..v15, mapped to XMM) — plus direct
+// jumps between labeled blocks. There are no virtual registers, no phi nodes,
+// and no basic-block value merging — the control flow is exactly the control
+// flow of the emitted machine code.
 //
 // The verifier (pkg/verifier) is therefore an eBPF-style abstract interpreter:
 // it walks the instruction stream, tracks the type, arena binding and value
@@ -17,11 +18,19 @@ import (
 	"strings"
 )
 
-// Register identifies one of the 16 flat machine registers.
+// Register identifies one of the machine registers. Registers 0..15 are the
+// general-purpose file (r0..r15); registers 16..31 are the vector file
+// (v0..v15, mapped to XMM registers), which hold floats and SIMD values.
 type Register int
 
-// NumRegs is the size of the register file.
-const NumRegs = 16
+const (
+	// NumGP is the number of general-purpose registers.
+	NumGP = 16
+	// NumVec is the number of vector registers.
+	NumVec = 16
+	// NumRegs is the total size of the register file.
+	NumRegs = NumGP + NumVec
+)
 
 // NoReg is the sentinel for "no register" (e.g. an absent index or operand).
 const NoReg Register = NumRegs
@@ -32,12 +41,22 @@ const AccessSize int64 = 8
 // Valid reports whether r names a real register.
 func (r Register) Valid() bool { return r >= 0 && r < NumRegs }
 
-// String renders a register as "rN".
+// IsGP reports whether r is a general-purpose register.
+func (r Register) IsGP() bool { return r >= 0 && r < NumGP }
+
+// IsVec reports whether r is a vector register.
+func (r Register) IsVec() bool { return r >= NumGP && r < NumRegs }
+
+// String renders a register as "rN" or "vN".
 func (r Register) String() string {
-	if !r.Valid() {
+	switch {
+	case r.IsGP():
+		return fmt.Sprintf("r%d", int(r))
+	case r.IsVec():
+		return fmt.Sprintf("v%d", int(r)-NumGP)
+	default:
 		return "<none>"
 	}
-	return fmt.Sprintf("r%d", int(r))
 }
 
 // ValKind is the declared type of a function parameter.
@@ -104,7 +123,15 @@ const (
 	OpAdd          // rdst = ADD ra, (rb | imm)
 	OpSub          // rdst = SUB ra, (rb | imm)
 	OpMul          // rdst = MUL ra, (rb | imm)
+	OpFConst       // vdst = <float literal>
+	OpFAdd         // vdst = FADD vsrc, vsrc
+	OpFSub         // vdst = FSUB vsrc, vsrc
+	OpFMul         // vdst = FMUL vsrc, vsrc
+	OpFDiv         // vdst = FDIV vsrc, vsrc
+	OpIToF         // vdst = ITOF rsrc   (integer to float)
+	OpFToI         // rdst = FTOI vsrc   (float to integer)
 	OpPrint        // PRINT rsrc
+	OpPrintF       // PRINTF vsrc
 	OpRet          // RET rsrc
 	OpCall         // CALL name
 
@@ -130,7 +157,15 @@ var opNames = map[OpCode]string{
 	OpAdd:          "ADD",
 	OpSub:          "SUB",
 	OpMul:          "MUL",
+	OpFConst:       "FCONST",
+	OpFAdd:         "FADD",
+	OpFSub:         "FSUB",
+	OpFMul:         "FMUL",
+	OpFDiv:         "FDIV",
+	OpIToF:         "ITOF",
+	OpFToI:         "FTOI",
 	OpPrint:        "PRINT",
+	OpPrintF:       "PRINTF",
 	OpRet:          "RET",
 	OpCall:         "CALL",
 	OpJmp:          "JMP",
@@ -180,7 +215,8 @@ func (o OpCode) IsTerminator() bool {
 // HasDest reports whether the opcode writes Dst.
 func (o OpCode) HasDest() bool {
 	switch o {
-	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpAdd, OpSub, OpMul:
+	case OpMov, OpArenaCreate, OpArenaAlloc, OpLoad, OpAdd, OpSub, OpMul,
+		OpFConst, OpFAdd, OpFSub, OpFMul, OpFDiv, OpIToF, OpFToI:
 		return true
 	default:
 		return false
@@ -231,6 +267,7 @@ type Instruction struct {
 	Dst      Register
 	Src      [2]Register
 	Imm      int64
+	FImm     float64 // OpFConst: the float literal
 	Mem      Mem
 	Label    string
 	Tier     TopologyTier
@@ -294,6 +331,16 @@ func (i Instruction) String() string {
 			rhs = i.Src[1].String()
 		}
 		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], rhs)
+	case OpFConst:
+		return fmt.Sprintf("%s%v", dst, i.FImm)
+	case OpFAdd, OpFSub, OpFMul, OpFDiv:
+		return fmt.Sprintf("%s%s %s, %s", dst, i.Op, i.Src[0], i.Src[1])
+	case OpIToF:
+		return fmt.Sprintf("%sITOF %s", dst, i.Src[0])
+	case OpFToI:
+		return fmt.Sprintf("%sFTOI %s", dst, i.Src[0])
+	case OpPrintF:
+		return fmt.Sprintf("PRINTF %s", i.Src[0])
 	case OpPrint:
 		return fmt.Sprintf("PRINT %s", i.Src[0])
 	case OpRet:

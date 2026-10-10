@@ -42,6 +42,7 @@ verification and code generation stay simple and direct.
 | — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
+| — | Base types: `f64` scalars in a separate vector register file (`v0`–`v15`) | ✅ |
 
 ## Layout
 

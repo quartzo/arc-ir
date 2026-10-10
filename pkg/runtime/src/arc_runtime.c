@@ -120,3 +120,7 @@ void arc_arena_destroy(long arena) {
 void arc_print(long v) {
     printf("%lld\n", (long long)v);
 }
+
+void arc_print_f64(double v) {
+    printf("%g\n", v);
+}

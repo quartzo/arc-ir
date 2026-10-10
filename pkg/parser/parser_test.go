@@ -183,6 +183,32 @@ func TestParseGrowableArena(t *testing.T) {
 	}
 }
 
+func TestParseFloat(t *testing.T) {
+	src := "v1 = 2.5\nv2 = -1.5\nv3 = FADD v1, v2\nr1 = FTOI v3\nv4 = ITOF r1\nPRINTF v4\n"
+	prog, err := Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if in := prog.Instrs[0]; in.Op != ir.OpFConst || in.FImm != 2.5 || !in.Dst.IsVec() {
+		t.Errorf("float const parsed as %+v", in)
+	}
+	if in := prog.Instrs[1]; in.FImm != -1.5 {
+		t.Errorf("negative float = %v", in.FImm)
+	}
+	if in := prog.Instrs[2]; in.Op != ir.OpFAdd || in.Src[0] != ir.Register(ir.NumGP+1) {
+		t.Errorf("FADD parsed as %+v", in)
+	}
+	if in := prog.Instrs[3]; in.Op != ir.OpFToI {
+		t.Errorf("FTOI parsed as %+v", in)
+	}
+	if in := prog.Instrs[4]; in.Op != ir.OpIToF {
+		t.Errorf("ITOF parsed as %+v", in)
+	}
+	if in := prog.Instrs[5]; in.Op != ir.OpPrintF {
+		t.Errorf("PRINTF parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

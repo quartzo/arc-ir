@@ -26,7 +26,8 @@ memory-safe.
 
 - **Word size:** 64 bits. Every register and every memory slot holds a 64-bit
   value. There are no sub-word types.
-- **Registers:** 16 general-purpose registers, `r0` through `r15`.
+- **Registers:** 16 general-purpose registers (`r0`–`r15`) and 16 vector
+  registers (`v0`–`v15`, mapped to XMM) for floats and SIMD.
 - **Memory:** byte-addressable, little-endian, addressed through 64-bit
   pointers. All application memory is obtained from **arenas** (see §5).
 - **Control:** direct jumps to labels; no indirect jumps or computed targets.
@@ -38,14 +39,17 @@ memory-safe.
 | `r0` | return value |
 | `r1`–`r4` | first four function arguments |
 | `r5`–`r15` | general purpose / temporaries |
+| `v0`–`v15` | vector registers: floats (`f64`) and, later, SIMD |
 
 Registers are untyped at the machine level. The verifier assigns each register
-an abstract type (`scalar`, `arena` or `data pointer`) at every program point
-and enforces its correct use.
+an abstract type at every program point — `scalar`, `f64`, `arena` or
+`data pointer` — and enforces its correct use. Only general registers may hold
+integers, arenas or pointers; floats live in vector registers.
 
-The backend maps ARC registers onto physical x86_64 registers. The mapping
-prefers callee-saved registers and spills to the stack under pressure; the
-argument and return registers (`r0`–`r4`) are always register-resident.
+The backend maps ARC registers onto physical x86_64 registers: general
+registers prefer callee-saved ones and spill to the stack under pressure;
+vector registers map to XMM. The argument and return registers (`r0`–`r4`) are
+always register-resident.
 
 ## 4. Instructions
 
@@ -139,6 +143,21 @@ execution continues with the next instruction.
 | Instruction | Semantics |
 |-------------|-----------|
 | `PRINT rsrc` | print the scalar `rsrc` (decimal, newline-terminated) |
+
+### 4.7 Float
+
+| Instruction | Semantics |
+|-------------|-----------|
+| `vdst = <float literal>` | `vdst = literal` (`f64`) |
+| `vdst = FADD va, vb` | `vdst = va + vb` (`f64`; also `FSUB`, `FMUL`, `FDIV`) |
+| `vdst = ITOF rsrc` | integer to `f64` |
+| `rdst = FTOI vsrc` | `f64` to integer (truncating) |
+| `PRINTF vsrc` | print an `f64` (newline-terminated) |
+
+Float values live in vector registers (`v0`–`v15`). The verifier enforces that
+float operands are `f64` and that conversions are explicit; a float can never
+be used as a pointer or an index, so floats do not affect the memory-safety
+guarantee.
 
 ## 5. Memory model
 
