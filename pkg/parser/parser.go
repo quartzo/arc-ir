@@ -75,6 +75,27 @@ func Parse(src string) (*ir.Program, error) {
 					p.Size = st.Size()
 				}
 			}
+			if in.RetKind == ir.KindPtr && in.RetStruct != "" {
+				st, ok := prog.Structs[in.RetStruct]
+				if !ok {
+					return nil, fmt.Errorf("line %d: unknown struct %q", in.Line, in.RetStruct)
+				}
+				in.RetSize = st.Size()
+			}
+		}
+	}
+	// Resolve struct-pointer fields to the size of the pointed-to struct. A
+	// pointer is one word, so this never recurses into the struct's own size.
+	for _, st := range prog.Structs {
+		for i := range st.Fields {
+			f := &st.Fields[i]
+			if f.Type == ir.KindPtr && f.Struct != "" {
+				target, ok := prog.Structs[f.Struct]
+				if !ok {
+					return nil, fmt.Errorf("unknown struct %q in field %s.%s", f.Struct, st.Name, f.Name)
+				}
+				f.Size = target.Size()
+			}
 		}
 	}
 	return prog, nil
@@ -115,19 +136,24 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 			return fmt.Errorf("line %d: unknown field type %q", lineNo, kindTok)
 		}
 		f := ir.Field{Name: fname, Type: kind}
-		if c.peek() == "(" {
-			c.pos++
-			sz, err := parseImm(c, lineNo)
+		switch kind {
+		case ir.KindPtr:
+			f.Struct, f.Elem, f.Count, f.Size, err = parsePtrTarget(c, lineNo)
 			if err != nil {
 				return err
 			}
-			if err := c.expect(")"); err != nil {
-				return err
+		case ir.KindArena:
+			if c.peek() == "(" {
+				c.pos++
+				sz, err := parseImm(c, lineNo)
+				if err != nil {
+					return err
+				}
+				if err := c.expect(")"); err != nil {
+					return err
+				}
+				f.Size = sz
 			}
-			f.Size = sz
-		}
-		if kind == ir.KindPtr && f.Size <= 0 {
-			return fmt.Errorf("line %d: ptr field %s requires a size, e.g. ptr(8)", lineNo, fname)
 		}
 		st.Fields = append(st.Fields, f)
 		if c.peek() == "," {
@@ -158,9 +184,23 @@ func splitField(tok string) (string, string, bool) {
 	return b, f, true
 }
 
+// stripComment removes a ';' or '#' comment, ignoring comment characters that
+// appear inside brackets (so that array types like [i64; 8] survive).
 func stripComment(line string) string {
-	if idx := strings.IndexAny(line, ";#"); idx >= 0 {
-		return line[:idx]
+	depth := 0
+	for i, ch := range line {
+		switch ch {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case ';', '#':
+			if depth == 0 {
+				return line[:i]
+			}
+		}
 	}
 	return line
 }
@@ -437,27 +477,24 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 				return ir.Instruction{}, fmt.Errorf("line %d: 'own' is only valid for arena parameters", lineNo)
 			}
 			param := ir.Param{Reg: reg, Kind: kind, Own: own}
-			if c.peek() == "(" {
-				c.pos++
-				if kind == ir.KindPtr && isIdent(c.peek()) {
-					name, err := c.next()
-					if err != nil {
-						return ir.Instruction{}, err
-					}
-					param.Struct = name
-				} else {
+			switch kind {
+			case ir.KindPtr:
+				param.Struct, param.Elem, param.Count, param.Size, err = parsePtrTarget(c, lineNo)
+				if err != nil {
+					return ir.Instruction{}, err
+				}
+			case ir.KindArena:
+				if c.peek() == "(" {
+					c.pos++
 					size, err := parseImm(c, lineNo)
 					if err != nil {
 						return ir.Instruction{}, err
 					}
+					if err := c.expect(")"); err != nil {
+						return ir.Instruction{}, err
+					}
 					param.Size = size
 				}
-				if err := c.expect(")"); err != nil {
-					return ir.Instruction{}, err
-				}
-			}
-			if kind == ir.KindPtr && param.Size <= 0 && param.Struct == "" {
-				return ir.Instruction{}, fmt.Errorf("line %d: ptr parameter %s needs a size or struct, e.g. ptr(64)", lineNo, reg)
 			}
 			inst.Params = append(inst.Params, param)
 			if c.peek() == "," {
@@ -470,7 +507,7 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			return ir.Instruction{}, err
 		}
 	}
-	// Optional return type: "-> kind" or "-> ptr(size)".
+	// Optional return type: "-> kind" or "-> ptr(Struct|[T; N])".
 	if c.peek() == "-" && c.peekAt(1) == ">" {
 		c.pos += 2
 		kindTok, err := c.next()
@@ -482,19 +519,24 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			return ir.Instruction{}, fmt.Errorf("line %d: unknown return type %q", lineNo, kindTok)
 		}
 		inst.RetKind = kind
-		if c.peek() == "(" {
-			c.pos++
-			size, err := parseImm(c, lineNo)
+		switch kind {
+		case ir.KindPtr:
+			inst.RetStruct, inst.RetElem, inst.RetCount, inst.RetSize, err = parsePtrTarget(c, lineNo)
 			if err != nil {
 				return ir.Instruction{}, err
 			}
-			if err := c.expect(")"); err != nil {
-				return ir.Instruction{}, err
+		case ir.KindArena:
+			if c.peek() == "(" {
+				c.pos++
+				size, err := parseImm(c, lineNo)
+				if err != nil {
+					return ir.Instruction{}, err
+				}
+				if err := c.expect(")"); err != nil {
+					return ir.Instruction{}, err
+				}
+				inst.RetSize = size
 			}
-			inst.RetSize = size
-		}
-		if kind == ir.KindPtr && inst.RetSize <= 0 {
-			return ir.Instruction{}, fmt.Errorf("line %d: ptr return type requires a size, e.g. -> ptr(64)", lineNo)
 		}
 	}
 
@@ -570,13 +612,22 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		if err := c.expect(","); err != nil {
 			return inst, err
 		}
-		if isIdent(c.peek()) {
+		switch {
+		case c.peek() == "[":
+			elem, count, err := parseArray(c, lineNo)
+			if err != nil {
+				return inst, err
+			}
+			inst.Elem = elem
+			inst.Count = count
+			inst.Size = 8 * count
+		case isIdent(c.peek()):
 			name, err := c.next()
 			if err != nil {
 				return inst, err
 			}
 			inst.Struct = name // Size is resolved in Parse
-		} else {
+		default:
 			size, err := parseImm(c, lineNo)
 			if err != nil {
 				return inst, err
@@ -934,6 +985,63 @@ func parseLanes(c *cursor, k ir.VecKind, lineNo int) ([]int64, error) {
 		return nil, fmt.Errorf("line %d: a vector literal needs 1 or %d lanes, got %d", lineNo, count, len(lanes))
 	}
 	return lanes, nil
+}
+
+// parseArray parses "[Elem; Count]".
+func parseArray(c *cursor, lineNo int) (ir.ElemKind, int64, error) {
+	if err := c.expect("["); err != nil {
+		return 0, 0, err
+	}
+	elemTok, err := c.next()
+	if err != nil {
+		return 0, 0, err
+	}
+	elem, ok := ir.ParseElemKind(elemTok)
+	if !ok {
+		return 0, 0, fmt.Errorf("line %d: unknown element type %q (want i64 or f64)", lineNo, elemTok)
+	}
+	if err := c.expect(";"); err != nil {
+		return 0, 0, err
+	}
+	count, err := parseImm(c, lineNo)
+	if err != nil {
+		return 0, 0, err
+	}
+	if count <= 0 {
+		return 0, 0, fmt.Errorf("line %d: array count must be positive", lineNo)
+	}
+	if err := c.expect("]"); err != nil {
+		return 0, 0, err
+	}
+	return elem, count, nil
+}
+
+// parsePtrTarget parses the parenthesised target of a pointer: a struct name or
+// an array type.
+func parsePtrTarget(c *cursor, lineNo int) (structName string, elem ir.ElemKind, count int64, size int64, err error) {
+	if err = c.expect("("); err != nil {
+		return
+	}
+	if c.peek() == "[" {
+		elem, count, err = parseArray(c, lineNo)
+		size = 8 * count
+	} else {
+		var name string
+		name, err = c.next()
+		if err != nil {
+			return
+		}
+		if !isIdent(name) {
+			err = fmt.Errorf("line %d: ptr needs a struct or array, e.g. ptr([i64; 8])", lineNo)
+			return
+		}
+		structName = name
+	}
+	if err != nil {
+		return
+	}
+	err = c.expect(")")
+	return
 }
 
 func parseRegister(tok string, lineNo int) (ir.Register, error) {

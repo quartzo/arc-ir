@@ -104,6 +104,8 @@ an arena invalidates every pointer derived from it.
 | `rdst = ARENA_CREATE <tier>, <size>` | create a **fixed** arena of `size` bytes |
 | `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a **growable** arena whose chunks are `chunk` bytes |
 | `rdst = ARENA_ALLOC rsrc, <size>` | allocate `size` bytes inside arena `rsrc`; `rdst` is a data pointer |
+| `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i64` or `f64`); `rdst` is an array pointer |
+| `rdst = ARENA_ALLOC rsrc, <Struct>` | allocate `sizeof(Struct)` and give `rdst` the struct type |
 | `ARENA_DESTROY rsrc` | free arena `rsrc` and invalidate its pointers |
 
 Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`).
@@ -234,12 +236,14 @@ The calling convention is:
   as the exit status.
 
 Parameters are declared with a type: `scalar`, `arena` and `ptr`. A `ptr`
-parameter carries the size of the allocation it refers to, written
-`ptr(<size>)`. An `arena` parameter is **borrowed** unless prefixed with `own`,
-which transfers ownership to the callee (see §7):
+parameter carries the type of the region it points to — either a named struct
+(`ptr(Struct)`, see §9) or an array of words (`ptr([T; N])`, where `T` is `i64`
+or `f64` and `N` is a positive element count). An `arena` parameter is
+**borrowed** unless prefixed with `own`, which transfers ownership to the callee
+(see §7):
 
 ```
-func read(r1: ptr(64)):
+func read(r1: ptr([i64; 8])):
     r0 = LOAD [r1]
     RET r0
 ```
@@ -256,15 +260,15 @@ func get_arena() -> arena:
     r0 = ARENA_CREATE DRAM_LOCAL, 4096
     RET r0
 
-func make(r1: arena) -> ptr(64):
-    r0 = ARENA_ALLOC r1, 64
+func make(r1: arena) -> ptr([i64; 8]):
+    r0 = ARENA_ALLOC r1, [i64; 8]
     RET r0
 ```
 
 The default return type is `scalar`. The verifier checks at every `RET` that
-the returned register matches the declared return type (and, for `ptr(size)`,
-that the allocation is large enough and still live), and gives the caller's
-`r0` that type after the call.
+the returned register matches the declared return type (and, for a `ptr`, that
+the target matches and the allocation is large enough and still live), and gives
+the caller's `r0` that type after the call.
 
 A program with no `func` declaration is treated as a single entry function
 named `main`.
@@ -317,7 +321,7 @@ A struct is a named layout. Every field is one 8-byte word, at consecutive
 offsets:
 
 ```
-struct Node { next: ptr(8), val: scalar }
+struct Node { next: ptr(Node), val: scalar }
 ```
 
 - `ARENA_ALLOC r, Node` allocates `sizeof(Node)` and gives `r` the struct type.
@@ -326,6 +330,8 @@ struct Node { next: ptr(8), val: scalar }
 - Field types are a **contract**: writing a value of the wrong kind (or, for a
   `ptr` field, a smaller allocation) is rejected, and reading a field before it
   is written is rejected (definite initialization).
+- A `ptr` field names the region it points to, either a struct (`ptr(Node)`) or
+  an array (`ptr([i64; 8])`).
 
 A struct layout travels in a `ptr(Struct)` parameter, so the callee can read
 and write the fields:
@@ -341,3 +347,33 @@ The caller must pass a pointer of that struct whose fields are all
 initialized. Because the callee may write through the pointer, the caller's
 view of those cells becomes stale after the call (reads yield scalars until the
 fields are stored again).
+
+## 10. Arrays
+
+An array is a contiguous run of words. `[T; N]` denotes `N` elements of type
+`T`, where `T` is `i64` (a scalar word) or `f64`; its size is `8*N` bytes. A
+pointer to an array, `ptr([T; N])`, may be a parameter type, a return type, or a
+struct field:
+
+```
+func first(r1: ptr([i64; 4])) -> scalar:
+    r0 = LOAD [r1]
+    RET r0
+```
+
+`ARENA_ALLOC r, [T; N]` allocates the array and gives `r` an array pointer. A
+load through an array pointer yields the element type — an `i64` element loads
+into a general register and an `f64` element into a vector register — and a
+store requires a value of the element type. Because every element is a full
+word, element `k` lives at offset `k*8`:
+
+```
+    r2 = ARENA_ALLOC r1, [i64; 4]
+    r3 = 7
+    STORE [r2 + 16], r3      ; r2[2] = 7
+    r4 = LOAD [r2 + 16]      ; r4 = r2[2]
+```
+
+Array bounds are checked exactly like any other pointer: the access must lie
+within `8*N` bytes of the allocation.
+

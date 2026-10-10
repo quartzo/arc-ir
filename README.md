@@ -37,14 +37,15 @@ verification and code generation stay simple and direct.
 | — | Register allocator: ARC regs → physical regs | ✅ (spill-on-pressure) |
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
-| — | Pointer parameters (`ptr(size)`) with interprocedural size checks | ✅ |
-| — | Non-scalar returns: `-> arena`, `-> ptr(size)` | ✅ |
+| — | Pointer parameters (`ptr(...)`) with interprocedural size checks | ✅ |
+| — | Non-scalar returns: `-> arena`, `-> ptr(...)` | ✅ |
 | — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
 | — | Base types: `f64`/`f32` scalars in a separate vector register file (`v0`–`v15`) | ✅ |
 | — | SIMD vectors: `f32x4`/`f64x2`/`i32x4`/`i64x2` packed arithmetic (type-level) | ✅ |
 | — | Structs: named layouts, field access, definite initialization, `ptr(Struct)` params | ✅ |
+| — | Arrays: `[T; N]` regions (`ptr([T; N])`), element-typed loads/stores | ✅ |
 
 ## Layout
 
@@ -151,14 +152,14 @@ rec:
     RET r0
 ```
 
-Parameters are typed: `scalar`, `arena`, and `ptr(size)` (a data pointer to an
-allocation of `size` bytes). The verifier checks each function independently
-against its parameter types, and at every call site checks argument types and
-that a pointer argument is at least as large as declared. Functions may
-recurse.
+Parameters are typed: `scalar`, `arena`, and `ptr(...)` (a data pointer to a
+region — a struct `ptr(Struct)` or an array `ptr([T; N])`). The verifier checks
+each function independently against its parameter types, and at every call site
+checks argument types and that a pointer argument is at least as large as
+declared. Functions may recurse.
 
-A function may also declare a return type with `->` (`arena` or `ptr(size)`;
-the default is `scalar`). The verifier checks the value returned at each `RET`
+A function may also declare a return type with `->` (`arena` or `ptr(...)`; the
+default is `scalar`). The verifier checks the value returned at each `RET`
 against that type and gives the caller's `r0` the declared type.
 
 ## Ownership
@@ -212,6 +213,22 @@ loading it back yields a data pointer, so pointers survive a `STORE`/`LOAD`
 round-trip (`examples/typed_mem.arc`). Writing an arena handle into memory is
 rejected, and dynamic-offset or foreign accesses are scalar-only. Releasing an
 arena invalidates typed cells referring to it.
+
+## Arrays and structs
+
+An **array** is a contiguous run of words, written `[T; N]` with `T` either
+`i64` or `f64`. `ARENA_ALLOC r, [T; N]` allocates it and gives `r` an array
+pointer; a load through that pointer yields the element type (an `i64` element
+loads into a general register, an `f64` element into a vector register) and a
+store requires a value of the element type (`examples/ptr.arc`).
+
+A **struct** is a named layout of 8-byte fields (`struct Node { next: ptr(Node),
+val: scalar }`). `ARENA_ALLOC r, Node` allocates it; `r.field` reads a field and
+`r.field = rsrc` writes one. Field types are a contract — a wrong type or a
+too-small pointer is rejected — and reading a field before writing it is
+rejected (definite initialization). A layout travels across a call in a
+`ptr(Struct)` parameter, so the callee can read and write fields
+(`examples/struct.arc`, `examples/ptr_struct.arc`).
 
 ## The Verifier
 

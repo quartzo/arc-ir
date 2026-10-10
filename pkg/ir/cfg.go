@@ -13,15 +13,18 @@ type Block struct {
 // Function is a single function: its declared parameters and its control-flow
 // graph. Labels are local to the function.
 type Function struct {
-	Name    string
-	Params  []Param
-	RetKind ValKind
-	RetSize int64
-	Blocks  []*Block
-	Index   map[string]int // local label -> block index
-	Succs   [][]int
-	Preds   [][]int
-	IsEntry bool
+	Name      string
+	Params    []Param
+	RetKind   ValKind
+	RetSize   int64
+	RetStruct string
+	RetElem   ElemKind
+	RetCount  int64
+	Blocks    []*Block
+	Index     map[string]int // local label -> block index
+	Succs     [][]int
+	Preds     [][]int
+	IsEntry   bool
 
 	instrs []Instruction
 }
@@ -51,7 +54,7 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetSize: r.retSize, Index: map[string]int{}, instrs: r.instrs}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -90,11 +93,14 @@ func BuildModule(p *Program) (*Module, error) {
 }
 
 type rawFunc struct {
-	name    string
-	params  []Param
-	retKind ValKind
-	retSize int64
-	instrs  []Instruction
+	name      string
+	params    []Param
+	retKind   ValKind
+	retSize   int64
+	retStruct string
+	retElem   ElemKind
+	retCount  int64
+	instrs    []Instruction
 }
 
 func splitFunctions(p *Program) ([]rawFunc, error) {
@@ -105,10 +111,13 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 	for _, inst := range p.Instrs {
 		if inst.Op == OpFunc {
 			funcs = append(funcs, rawFunc{
-				name:    inst.Label,
-				params:  inst.Params,
-				retKind: inst.RetKind,
-				retSize: inst.RetSize,
+				name:      inst.Label,
+				params:    inst.Params,
+				retKind:   inst.RetKind,
+				retSize:   inst.RetSize,
+				retStruct: inst.RetStruct,
+				retElem:   inst.RetElem,
+				retCount:  inst.RetCount,
 			})
 			cur = len(funcs) - 1
 			continue

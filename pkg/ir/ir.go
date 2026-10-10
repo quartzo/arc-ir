@@ -135,6 +135,39 @@ func ParseVecKind(s string) (VecKind, bool) {
 	return VecF32x4, false
 }
 
+// ElemKind is the element type of an array region.
+type ElemKind int
+
+const (
+	// ElemI64 is an 8-byte integer element.
+	ElemI64 ElemKind = iota
+	// ElemF64 is an 8-byte float element.
+	ElemF64
+)
+
+var elemNames = map[ElemKind]string{
+	ElemI64: "i64",
+	ElemF64: "f64",
+}
+
+// String returns the textual name of the element kind.
+func (k ElemKind) String() string {
+	if n, ok := elemNames[k]; ok {
+		return n
+	}
+	return "elem(?)"
+}
+
+// ParseElemKind resolves a textual element kind.
+func ParseElemKind(s string) (ElemKind, bool) {
+	for k, n := range elemNames {
+		if n == s {
+			return k, true
+		}
+	}
+	return ElemI64, false
+}
+
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
 // to, which the callee's bounds checks rely on. Own marks an arena parameter
@@ -143,7 +176,9 @@ type Param struct {
 	Reg    Register
 	Kind   ValKind
 	Size   int64
-	Struct string // ptr(Struct): the struct layout the pointer refers to
+	Struct string   // ptr(Struct): the struct layout the pointer refers to
+	Elem   ElemKind // ptr([Elem; Count]): the array element type
+	Count  int64    // ptr([Elem; Count]): the element count
 	Own    bool
 }
 
@@ -349,16 +384,21 @@ type Instruction struct {
 	Label    string
 	Tier     TopologyTier
 	Size     int64
-	Growable bool   // OpArenaCreate: extensible arena; Size is the chunk size
-	Struct   string // OpArenaAlloc: struct type name
-	Field    string // OpField / OpFieldStore: field name
+	Growable bool     // OpArenaCreate: extensible arena; Size is the chunk size
+	Struct   string   // OpArenaAlloc: struct type name
+	Elem     ElemKind // OpArenaAlloc: array element type (when Count > 0)
+	Count    int64    // OpArenaAlloc: array element count
+	Field    string   // OpField / OpFieldStore: field name
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
 	// RetKind/RetSize hold a function's declared return type (OpFunc only).
 	// The zero value (KindScalar, 0) means a scalar return.
-	RetKind ValKind
-	RetSize int64
+	RetKind   ValKind
+	RetSize   int64
+	RetStruct string
+	RetElem   ElemKind
+	RetCount  int64
 
 	// Line is the 1-based source line, attached by the parser.
 	Line int
@@ -454,11 +494,15 @@ type Program struct {
 	Structs map[string]*Struct
 }
 
-// Field is one member of a struct. Every field is one 8-byte word.
+// Field is one member of a struct. Every field is one 8-byte word, or a
+// pointer to a struct or array.
 type Field struct {
-	Name string
-	Type ValKind
-	Size int64 // for ptr fields
+	Name   string
+	Type   ValKind
+	Size   int64    // for ptr fields: total bytes
+	Struct string   // ptr(Struct)
+	Elem   ElemKind // ptr([Elem; Count])
+	Count  int64
 }
 
 // Struct is a named layout: fields at consecutive 8-byte offsets.
@@ -488,7 +532,9 @@ func formatParams(params []Param) string {
 			prefix = "own "
 		}
 		typ := formatType(p.Kind, p.Size)
-		if p.Kind == KindPtr && p.Struct != "" {
+		if p.Kind == KindPtr && p.Count > 0 {
+			typ = fmt.Sprintf("ptr([%s; %d])", p.Elem, p.Count)
+		} else if p.Kind == KindPtr && p.Struct != "" {
 			typ = "ptr(" + p.Struct + ")"
 		}
 		parts[i] = fmt.Sprintf("%s: %s%s", p.Reg, prefix, typ)

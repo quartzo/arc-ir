@@ -2,7 +2,7 @@
 func main:
     CALL get_arena          ; r0 = arena
     r1 = r0                 ; keep the arena handle
-    CALL make               ; make(r1) -> ptr(64)
+    CALL make               ; make(r1) -> ptr([i64; 8])
     r2 = r0
     r3 = 99
     STORE [r2], r3
@@ -15,6 +15,6 @@ func get_arena() -> arena:
     r0 = ARENA_CREATE DRAM_LOCAL, 64
     RET r0
 
-func make(r1: arena) -> ptr(64):
+func make(r1: arena) -> ptr([i64; 8]):
     r0 = ARENA_ALLOC r1, 64
     RET r0

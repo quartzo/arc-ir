@@ -87,17 +87,19 @@ func (t RegType) String() string {
 type RegState struct {
 	Defined   bool
 	Type      RegType
-	Min, Max  int64  // scalar range
-	RefID     int    // arena identity for arena handles and data pointers (-1 = none)
-	AllocID   int    // allocation identity for data pointers (-1 = unknown)
-	Owned     bool   // this function holds the reference and must release it
-	Foreign   bool   // data pointer whose arena provenance is unknown (from a call)
-	Growable  bool   // arena handle: extensible (AllocSize is the chunk size)
-	Struct    string // data pointer: struct type name, if any
-	AllocSize int64  // reachable bytes (arena capacity/chunk, or allocation size)
-	Init      bool   // memory cell: has been written
-	Declared  bool   // memory cell: seeded from a struct field (type is a contract)
-	Destroyed bool   // owning arena destroyed / reference released
+	Min, Max  int64       // scalar range
+	RefID     int         // arena identity for arena handles and data pointers (-1 = none)
+	AllocID   int         // allocation identity for data pointers (-1 = unknown)
+	Owned     bool        // this function holds the reference and must release it
+	Foreign   bool        // data pointer whose arena provenance is unknown (from a call)
+	Growable  bool        // arena handle: extensible (AllocSize is the chunk size)
+	Struct    string      // data pointer: struct type name, if any
+	Elem      ir.ElemKind // data pointer: array element type (when Count > 0)
+	Count     int64       // data pointer: array element count
+	AllocSize int64       // reachable bytes (arena capacity/chunk, or allocation size)
+	Init      bool        // memory cell: has been written
+	Declared  bool        // memory cell: seeded from a struct field (type is a contract)
+	Destroyed bool        // owning arena destroyed / reference released
 }
 
 // MemKey identifies a memory cell: an allocation and a byte offset.
@@ -287,7 +289,7 @@ func (v *Verifier) entryState() (State, error) {
 			// typed inside the callee.
 			alloc := v.nextParamAlloc
 			v.nextParamAlloc++
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct, Elem: p.Elem, Count: p.Count}
 			if p.Struct != "" {
 				sf := v.mod.Structs[p.Struct]
 				if sf == nil {
@@ -300,6 +302,9 @@ func (v *Verifier) entryState() (State, error) {
 						RefID:     -1,
 						AllocID:   -1,
 						AllocSize: f.Size,
+						Struct:    f.Struct,
+						Elem:      f.Elem,
+						Count:     f.Count,
 						Declared:  true,
 						Init:      true,
 					})
@@ -459,6 +464,8 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			RefID:     arena.RefID,
 			AllocID:   alloc,
 			Struct:    inst.Struct,
+			Elem:      inst.Elem,
+			Count:     inst.Count,
 			AllocSize: inst.Size,
 		}
 		if inst.Struct != "" {
@@ -473,6 +480,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 					RefID:     -1,
 					AllocID:   -1,
 					AllocSize: f.Size,
+					Struct:    f.Struct,
+					Elem:      f.Elem,
+					Count:     f.Count,
 					Declared:  true,
 				})
 			}
@@ -504,6 +514,23 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if err := v.checkBounds(st, ptr, inst.Mem, inst); err != nil {
 			return err
 		}
+		if ptr.Count > 0 {
+			if ptr.Elem == ir.ElemF64 {
+				if !inst.Dst.IsVec() {
+					return v.errf(inst, "loading an f64 element requires a vector register")
+				}
+				st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeF64, RefID: -1, AllocID: -1}
+			} else {
+				if !inst.Dst.IsGP() {
+					return v.errf(inst, "loading an i64 element requires a general register")
+				}
+				st.Regs[inst.Dst] = unknownScalar()
+			}
+			return nil
+		}
+		if !inst.Dst.IsGP() {
+			return v.errf(inst, "LOAD requires a general register destination")
+		}
 		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
 			st.Regs[inst.Dst] = unknownScalar()
 			return nil
@@ -530,6 +557,20 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if err != nil {
 			return err
 		}
+		if ptr.Count > 0 {
+			want := elemRegType(ptr.Elem)
+			if src.Type != want {
+				return v.errf(inst, "array element expects %s, got %s", want, src.Type)
+			}
+			if ptr.Elem == ir.ElemF64 {
+				if !inst.Src[0].IsVec() {
+					return v.errf(inst, "storing an f64 element requires a vector register")
+				}
+			} else if !inst.Src[0].IsGP() {
+				return v.errf(inst, "storing an i64 element requires a general register")
+			}
+			return nil
+		}
 		// Only static offsets into a locally-known allocation are typed.
 		if inst.Mem.Index.Valid() || ptr.AllocID < 0 {
 			if src.Type != TypeScalar {
@@ -546,6 +587,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				RefID:     src.RefID,
 				AllocID:   src.AllocID,
 				AllocSize: cell.AllocSize,
+				Struct:    cell.Struct,
+				Elem:      cell.Elem,
+				Count:     cell.Count,
 				Declared:  true,
 				Init:      true,
 				Destroyed: src.Destroyed,
@@ -561,6 +605,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				RefID:     src.RefID,
 				AllocID:   src.AllocID,
 				AllocSize: src.AllocSize,
+				Struct:    src.Struct,
+				Elem:      src.Elem,
+				Count:     src.Count,
 				Init:      true,
 				Destroyed: src.Destroyed,
 			})
@@ -685,7 +732,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 						}
 					}
 				} else if rs.AllocSize < p.Size {
-					return v.errf(inst, "argument %s to %s: %d-byte allocation is smaller than the declared ptr(%d)",
+					return v.errf(inst, "argument %s to %s: %d-byte allocation is smaller than the required %d bytes",
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
 				}
 				// The callee may write through the pointer, so the caller's
@@ -712,7 +759,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		case ir.KindArena:
 			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: callee.RetSize}
 		case ir.KindPtr:
-			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize}
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount}
 		default:
 			st.Regs[0] = unknownScalar()
 		}
@@ -923,12 +970,21 @@ func loadFromCell(cell RegState) RegState {
 		AllocID:   cell.AllocID,
 		AllocSize: cell.AllocSize,
 		Struct:    cell.Struct,
+		Elem:      cell.Elem,
+		Count:     cell.Count,
 		Destroyed: cell.Destroyed,
 	}
 	if cell.Type == TypeScalar {
 		out.Min, out.Max = math.MinInt64, math.MaxInt64
 	}
 	return out
+}
+
+func elemRegType(k ir.ElemKind) RegType {
+	if k == ir.ElemF64 {
+		return TypeF64
+	}
+	return TypeScalar
 }
 
 func (v *Verifier) fieldCompatible(cell RegState, src *RegState, inst ir.Instruction) error {
@@ -1056,8 +1112,11 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 			}
 			returnedRef = rs.RefID
 		case ir.KindPtr:
+			if v.f.RetStruct != "" && rs.Struct != v.f.RetStruct {
+				return v.errf(inst, "function %s must return a %s pointer", v.f.Name, v.f.RetStruct)
+			}
 			if rs.AllocSize < v.f.RetSize {
-				return v.errf(inst, "function %s returns ptr(%d), but %s is a %d-byte allocation",
+				return v.errf(inst, "function %s returns %d bytes, but %s is a %d-byte allocation",
 					v.f.Name, v.f.RetSize, inst.Src[0], rs.AllocSize)
 			}
 		}
@@ -1138,6 +1197,10 @@ func mergeStates(a, b State) State {
 		ra.Foreign = ra.Foreign || rb.Foreign
 		ra.Growable = ra.Growable && rb.Growable
 		ra.AllocSize = minAlloc(ra.AllocSize, rb.AllocSize)
+		if ra.Struct != rb.Struct || ra.Count != rb.Count || ra.Elem != rb.Elem {
+			ra.Struct = ""
+			ra.Count = 0
+		}
 		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
 			// Different arenas/allocations on the two paths: provenance and
 			// ownership are unknown.

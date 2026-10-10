@@ -1,17 +1,17 @@
-; struct.arc - a named layout with a pointer field and a scalar field.
-struct Node { next: ptr(8), val: scalar }
+; struct.arc - a named layout with a self-referential pointer field.
+struct Node { next: ptr(Node), val: scalar }
 
 func main:
     r1 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC r1, Node
-    r3 = ARENA_ALLOC r1, 8
+    r3 = ARENA_ALLOC r1, Node
     r4 = 42
-    STORE [r3], r4          ; *r3 = 42
-    r2.next = r3            ; Node.next = r3
+    r3.val = r4             ; r3.val = 42
+    r2.next = r3            ; r2.next = r3
     r5 = 7
-    r2.val = r5             ; Node.val = 7
+    r2.val = r5             ; r2.val = 7
     r6 = r2.next            ; load the pointer field
-    r7 = LOAD [r6]          ; *r6 = 42
+    r7 = r6.val             ; r6's val = 42
     PRINT r7
     r8 = r2.val             ; load the scalar field
     PRINT r8

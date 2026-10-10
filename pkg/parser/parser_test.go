@@ -120,7 +120,7 @@ func TestParseFunc(t *testing.T) {
 }
 
 func TestParsePtrParam(t *testing.T) {
-	prog, err := Parse("func f(r1: ptr(64)):\n    RET\n")
+	prog, err := Parse("func f(r1: ptr([i64; 8])):\n    RET\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestParsePtrParam(t *testing.T) {
 
 func TestParseReturnType(t *testing.T) {
 	src := "func f() -> arena:\n    RET\n" +
-		"func g() -> ptr(64):\n    RET\n" +
+		"func g() -> ptr([i64; 8]):\n    RET\n" +
 		"func h() -> scalar:\n    RET\n"
 	prog, err := Parse(src)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestParseSIMD64(t *testing.T) {
 }
 
 func TestParseStruct(t *testing.T) {
-	src := "struct Node { next: ptr(8), val: scalar }\n" +
+	src := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
 		"func main:\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
 		"    r3 = r2.next\n" +
@@ -296,7 +296,7 @@ func TestParseStruct(t *testing.T) {
 }
 
 func TestParsePtrStruct(t *testing.T) {
-	prog, err := Parse("struct Node { next: ptr(8), val: scalar }\nfunc f(r1: ptr(Node)):\n    RET\n")
+	prog, err := Parse("struct Node { next: ptr([i64; 1]), val: scalar }\nfunc f(r1: ptr(Node)):\n    RET\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -317,8 +317,8 @@ func TestParseErrors(t *testing.T) {
 		{"bad scale", "STORE [r1 + r2*3], r3\n", "scale must be"},
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
-		{"ptr without size", "func f(r1: ptr):\n    RET\n", "needs a size"},
-		{"ptr return without size", "func f() -> ptr:\n    RET\n", "requires a size"},
+		{"raw ptr rejected", "func f(r1: ptr(64)):\n    RET\n", "ptr needs a struct or array"},
+		{"raw ptr return rejected", "func f() -> ptr(64):\n    RET\n", "ptr needs a struct or array"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
 		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},

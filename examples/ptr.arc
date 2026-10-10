@@ -10,6 +10,6 @@ func main:
     ARENA_DESTROY r5
     RET r0
 
-func read(r1: ptr(64)):
+func read(r1: ptr([i64; 8])):
     r0 = LOAD [r1]
     RET r0

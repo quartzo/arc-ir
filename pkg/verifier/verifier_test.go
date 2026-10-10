@@ -1,6 +1,8 @@
 package verifier
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -224,7 +226,7 @@ func TestVerifyPointerParam(t *testing.T) {
 		"    CALL read\n" +
 		"    ARENA_DESTROY r5\n" +
 		"    RET r0\n" +
-		"func read(r1: ptr(64)):\n" +
+		"func read(r1: ptr([i64; 8])):\n" +
 		"    r0 = LOAD [r1]\n" +
 		"    RET r0\n"
 	if _, err := Verify(mustParse(t, src)); err != nil {
@@ -264,10 +266,10 @@ func TestVerifyFunctionRejections(t *testing.T) {
 				"    r1 = r2\n" +
 				"    CALL f\n" +
 				"    RET r0\n" +
-				"func f(r1: ptr(64)):\n" +
+				"func f(r1: ptr([i64; 8])):\n" +
 				"    r0 = LOAD [r1]\n" +
 				"    RET r0\n",
-			"smaller than the declared ptr(64)",
+			"smaller than the required",
 		},
 		{
 			"out of bounds through pointer parameter",
@@ -278,7 +280,7 @@ func TestVerifyFunctionRejections(t *testing.T) {
 				"    CALL f\n" +
 				"    ARENA_DESTROY r5\n" +
 				"    RET r0\n" +
-				"func f(r1: ptr(16)):\n" +
+				"func f(r1: ptr([i64; 2])):\n" +
 				"    r0 = LOAD [r1 + 32]\n" +
 				"    RET r0\n",
 			"out-of-bounds",
@@ -312,7 +314,7 @@ func TestVerifyNonScalarReturns(t *testing.T) {
 		"func get_arena() -> arena:\n" +
 		"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 		"    RET r0\n" +
-		"func make(r1: arena) -> ptr(64):\n" +
+		"func make(r1: arena) -> ptr([i64; 8]):\n" +
 		"    r0 = ARENA_ALLOC r1, 64\n" +
 		"    RET r0\n"
 	if _, err := Verify(mustParse(t, src)); err != nil {
@@ -329,13 +331,13 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"wrong return type",
 			"func main:\n    CALL f\n    r1 = 0\n    RET r1\n" +
-				"func f() -> ptr(64):\n    r0 = 5\n    RET r0\n",
+				"func f() -> ptr([i64; 8]):\n    r0 = 5\n    RET r0\n",
 			"declares return type ptr",
 		},
 		{
 			"returned allocation too small",
 			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    ARENA_DESTROY r5\n    r1 = 0\n    RET r1\n" +
-				"func f(r1: arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 16\n    RET r0\n",
+				"func f(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, 16\n    RET r0\n",
 			"16-byte allocation",
 		},
 		{
@@ -347,7 +349,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"return into destroyed arena",
 			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL f\n    r1 = 0\n    RET r1\n" +
-				"func f(r1: own arena) -> ptr(64):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
+				"func f(r1: own arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET r0\n",
 			"no longer live",
 		},
 	}
@@ -698,7 +700,7 @@ func TestVerifySIMD(t *testing.T) {
 }
 
 func TestVerifyStruct(t *testing.T) {
-	valid := "struct Node { next: ptr(8), val: scalar }\n" +
+	valid := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
 		"func main:\n" +
 		"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
@@ -723,7 +725,7 @@ func TestVerifyStruct(t *testing.T) {
 		want string
 	}{
 		{"uninitialized field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.a\n    ARENA_DESTROY r1\n    RET\n", "not initialized"},
-		{"wrong field type", "struct N { p: ptr(8) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
+		{"wrong field type", "struct N { p: ptr([i64; 1]) }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = 5\n    r2.p = r3\n    ARENA_DESTROY r1\n    RET\n", "field expects"},
 		{"field on non-struct", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 8\n    r3 = r2.x\n    ARENA_DESTROY r1\n    RET\n", "struct pointer"},
 		{"unknown field", "struct N { a: scalar }\nfunc main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, N\n    r3 = r2.b\n    ARENA_DESTROY r1\n    RET\n", "no field"},
 	}
@@ -741,7 +743,7 @@ func TestVerifyStruct(t *testing.T) {
 }
 
 func TestVerifyPtrStruct(t *testing.T) {
-	valid := "struct Node { next: ptr(8), val: scalar }\n" +
+	valid := "struct Node { next: ptr([i64; 1]), val: scalar }\n" +
 		"func main:\n" +
 		"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 		"    r2 = ARENA_ALLOC r9, Node\n" +
@@ -785,6 +787,72 @@ func TestVerifyPtrStruct(t *testing.T) {
 	}
 }
 
+func TestVerifyArray(t *testing.T) {
+	valid := []struct {
+		name string
+		src  string
+	}{
+		{"i64 array", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r1, [i64; 4]\n" +
+			"    r3 = 7\n" +
+			"    STORE [r2 + 16], r3\n" +
+			"    r4 = LOAD [r2 + 16]\n" +
+			"    PRINT r4\n" +
+			"    ARENA_DESTROY r1\n" +
+			"    RET r4\n"},
+		{"f64 array", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r1, [f64; 4]\n" +
+			"    v1 = 2.5\n" +
+			"    STORE [r2 + 8], v1\n" +
+			"    v2 = LOAD [r2 + 8]\n" +
+			"    PRINTF v2\n" +
+			"    ARENA_DESTROY r1\n" +
+			"    RET\n"},
+		{"array parameter", "func main:\n" +
+			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
+			"    r1 = r2\n" +
+			"    CALL read\n" +
+			"    ARENA_DESTROY r5\n" +
+			"    RET r0\n" +
+			"func read(r1: ptr([i64; 8])):\n" +
+			"    r0 = LOAD [r1]\n" +
+			"    RET r0\n"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Verify(mustParse(t, tc.src)); err != nil {
+				t.Fatalf("expected program to verify, got %v", err)
+			}
+		})
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"wrong element type", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [f64; 4]\n    r3 = 7\n    STORE [r2], r3\n    ARENA_DESTROY r1\n    RET\n", "array element expects"},
+		{"f64 element needs vector register", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [f64; 4]\n    r3 = LOAD [r2]\n    ARENA_DESTROY r1\n    RET\n", "requires a vector register"},
+		{"i64 element needs general register", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 4]\n    v1 = LOAD [r2]\n    ARENA_DESTROY r1\n    RET\n", "requires a general register"},
+		{"array out of bounds", "func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 4]\n    r3 = LOAD [r2 + 32]\n    ARENA_DESTROY r1\n    RET\n", "out-of-bounds"},
+		{"array argument too small", "func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, [i64; 2]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r5\n    RET\nfunc f(r1: ptr([i64; 8])):\n    RET\n", "smaller than the required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))
@@ -797,5 +865,38 @@ func TestVerifyErrorLine(t *testing.T) {
 	}
 	if ve.Line != 2 {
 		t.Errorf("error line = %d, want 2", ve.Line)
+	}
+}
+
+// TestExamples verifies every program in examples/: the invalid_* programs must
+// be rejected and all others accepted.
+func TestExamples(t *testing.T) {
+	paths, err := filepath.Glob("../../examples/*.arc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no examples found")
+	}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		t.Run(name, func(t *testing.T) {
+			src, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prog, err := parser.Parse(string(src))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			_, verr := Verify(prog)
+			invalid := strings.HasPrefix(name, "invalid_")
+			if invalid && verr == nil {
+				t.Fatalf("expected %s to be rejected", name)
+			}
+			if !invalid && verr != nil {
+				t.Fatalf("expected %s to verify, got %v", name, verr)
+			}
+		})
 	}
 }

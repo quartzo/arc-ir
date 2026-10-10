@@ -15,7 +15,7 @@ costs nothing, but it cannot be recovered dynamically. Therefore every place
 where a word crosses a boundary where the flow of meaning is interrupted needs
 an annotation to re-establish it:
 
-1. a **function argument** — `r1: ptr(64)`, `r1: own arena`;
+1. a **function argument** — `r1: ptr([i64; 8])`, `r1: ptr(Node)`, `r1: own arena`;
 2. a **function return** — `-> arena(4096)`;
 3. **memory** — a statically-addressed cell remembers the type stored in it.
 
