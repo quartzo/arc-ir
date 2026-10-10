@@ -355,7 +355,7 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
+- Enums: tag + payload with tag refinement (generalizes eBPF nullability).
 - Path-sensitive merge of ownership (fewer conservative rejections).
-- Typed cells across function boundaries (via typed `ptr` parameters).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.
