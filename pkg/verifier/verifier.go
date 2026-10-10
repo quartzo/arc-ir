@@ -68,7 +68,8 @@ type RegState struct {
 	AllocID   int   // allocation identity for data pointers (-1 = unknown)
 	Owned     bool  // this function holds the reference and must release it
 	Foreign   bool  // data pointer whose arena provenance is unknown (from a call)
-	AllocSize int64 // reachable bytes (arena capacity or allocation size)
+	Growable  bool  // arena handle: extensible (AllocSize is the chunk size)
+	AllocSize int64 // reachable bytes (arena capacity/chunk, or allocation size)
 	Destroyed bool  // owning arena destroyed / reference released
 }
 
@@ -78,11 +79,13 @@ type MemKey struct {
 	Off   int64
 }
 
-// State is the abstract state of the machine: the register file plus the
-// types of memory cells that were written through static offsets.
+// State is the abstract state of the machine: the register file, the types of
+// memory cells written through static offsets, and the bytes allocated so far
+// from each arena (keyed by reference id).
 type State struct {
 	Regs [ir.NumRegs]RegState
 	Mem  map[MemKey]RegState
+	Used map[int]int64
 }
 
 // clone returns a copy that shares no mutable storage with s.
@@ -92,6 +95,12 @@ func (s State) clone() State {
 		c.Mem = make(map[MemKey]RegState, len(s.Mem))
 		for k, v := range s.Mem {
 			c.Mem[k] = v
+		}
+	}
+	if len(s.Used) > 0 {
+		c.Used = make(map[int]int64, len(s.Used))
+		for k, v := range s.Used {
+			c.Used[k] = v
 		}
 	}
 	return c
@@ -107,6 +116,17 @@ func (s *State) setCell(alloc int, off int64, c RegState) {
 func (s *State) getCell(alloc int, off int64) (RegState, bool) {
 	c, ok := s.Mem[MemKey{alloc, off}]
 	return c, ok
+}
+
+func (s *State) getUsed(ref int) int64 {
+	return s.Used[ref]
+}
+
+func (s *State) setUsed(ref int, n int64) {
+	if s.Used == nil {
+		s.Used = map[int]int64{}
+	}
+	s.Used[ref] = n
 }
 
 // Result is the outcome of a successful verification.
@@ -216,10 +236,10 @@ func (v *Verifier) entryState() (State, error) {
 		case ir.KindScalar:
 			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeScalar, RefID: -1, AllocID: -1, Min: math.MinInt64, Max: math.MaxInt64}
 		case ir.KindArena:
-			// Capacity is unknown at the callee; allocations from it are still
-			// bounds-checked against their own size. A parameter is borrowed
-			// unless declared "own".
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, Owned: p.Own}
+			// Capacity is unknown unless declared as arena(<size>); allocations
+			// are then bounds-checked and capacity-checked. A parameter is
+			// borrowed unless declared "own".
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, Owned: p.Own, AllocSize: p.Size}
 			v.nextParamRef++
 		case ir.KindPtr:
 			// Provenance is unknown; treat it as possibly aliasing any arena.
@@ -284,6 +304,9 @@ func mergeEdge(m map[int]State, target int, st State) {
 // apply updates the state for a non-terminator instruction. ref and alloc are
 // the identities assigned to arena-producing / allocating instructions.
 func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
+	if inst.Op.HasDest() && !inst.Dst.Valid() {
+		return v.errf(inst, "%s requires a destination register", inst.Op)
+	}
 	switch inst.Op {
 	case ir.OpMov:
 		if inst.Src[0].Valid() {
@@ -301,7 +324,8 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if inst.Size <= 0 {
 			return v.errf(inst, "arena size must be positive, got %d", inst.Size)
 		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: inst.Size}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, Growable: inst.Growable, AllocSize: inst.Size}
+		st.setUsed(ref, 0)
 		return nil
 
 	case ir.OpArenaAlloc:
@@ -312,8 +336,19 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if inst.Size <= 0 {
 			return v.errf(inst, "allocation size must be positive, got %d", inst.Size)
 		}
-		if arena.AllocSize > 0 && inst.Size > arena.AllocSize {
-			return v.errf(inst, "allocation of %d bytes exceeds arena capacity %d", inst.Size, arena.AllocSize)
+		if arena.Growable {
+			// Each allocation must fit in a single chunk; the arena grows.
+			if arena.AllocSize > 0 && inst.Size > arena.AllocSize {
+				return v.errf(inst, "allocation of %d bytes exceeds chunk size %d", inst.Size, arena.AllocSize)
+			}
+		} else {
+			used := st.getUsed(arena.RefID)
+			if arena.AllocSize > 0 && satAdd(used, inst.Size) > arena.AllocSize {
+				return v.errf(inst,
+					"arena exhausted: %d bytes already allocated + %d requested exceeds capacity %d",
+					used, inst.Size, arena.AllocSize)
+			}
+			st.setUsed(arena.RefID, satAdd(used, inst.Size))
 		}
 		st.Regs[inst.Dst] = RegState{
 			Defined:   true,
@@ -442,6 +477,10 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
 				}
 			case ir.KindArena:
+				if p.Size > 0 && !rs.Growable && rs.AllocSize > 0 && rs.AllocSize < p.Size {
+					return v.errf(inst, "argument %s to %s: arena capacity %d is smaller than the declared %d",
+						p.Reg, callee.Name, rs.AllocSize, p.Size)
+				}
 				if p.Own {
 					if !rs.Owned {
 						return v.errf(inst, "argument %s to %s: cannot transfer a borrowed arena",
@@ -454,7 +493,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
 		case ir.KindArena:
-			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true}
+			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: callee.RetSize}
 		case ir.KindPtr:
 			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize}
 		default:
@@ -661,6 +700,7 @@ func (v *Verifier) release(st *State, refID int) {
 			st.Mem[k] = c
 		}
 	}
+	delete(st.Used, refID)
 }
 
 // checkReturn verifies a RET: the returned value matches the declared return
@@ -743,6 +783,14 @@ func stateEqual(a, b State) bool {
 			return false
 		}
 	}
+	if len(a.Used) != len(b.Used) {
+		return false
+	}
+	for k, v := range a.Used {
+		if w, ok := b.Used[k]; !ok || w != v {
+			return false
+		}
+	}
 	return true
 }
 
@@ -763,6 +811,7 @@ func mergeStates(a, b State) State {
 		ra.Max = max64(ra.Max, rb.Max)
 		ra.Destroyed = ra.Destroyed || rb.Destroyed
 		ra.Foreign = ra.Foreign || rb.Foreign
+		ra.Growable = ra.Growable && rb.Growable
 		ra.AllocSize = minAlloc(ra.AllocSize, rb.AllocSize)
 		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
 			// Different arenas/allocations on the two paths: provenance and
@@ -776,7 +825,27 @@ func mergeStates(a, b State) State {
 		m.Regs[r] = ra
 	}
 	m.Mem = mergeMem(a.Mem, b.Mem)
+	m.Used = mergeUsed(a.Used, b.Used)
 	return m
+}
+
+// mergeUsed joins the per-arena allocated-bytes maps conservatively: a key
+// present on either path is kept, taking the larger value, so the check at a
+// later allocation is at least as strict as on any path.
+func mergeUsed(a, b map[int]int64) map[int]int64 {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make(map[int]int64, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		if w, ok := out[k]; !ok || v > w {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {

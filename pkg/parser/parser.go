@@ -193,6 +193,12 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	if err != nil {
 		return ir.Instruction{}, err
 	}
+	if op.HasDest() && !inst.Dst.Valid() {
+		return ir.Instruction{}, fmt.Errorf("line %d: %s requires a destination register", lineNo, op)
+	}
+	if !op.HasDest() && inst.Dst.Valid() {
+		return ir.Instruction{}, fmt.Errorf("line %d: %s does not produce a result", lineNo, op)
+	}
 	if err := noTrailing(c); err != nil {
 		return ir.Instruction{}, err
 	}
@@ -334,11 +340,27 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 		if err := c.expect(","); err != nil {
 			return inst, err
 		}
-		size, err := parseImm(c, lineNo)
-		if err != nil {
-			return inst, err
+		if c.peek() == "growable" {
+			c.pos++
+			if err := c.expect("("); err != nil {
+				return inst, err
+			}
+			chunk, err := parseImm(c, lineNo)
+			if err != nil {
+				return inst, err
+			}
+			if err := c.expect(")"); err != nil {
+				return inst, err
+			}
+			inst.Growable = true
+			inst.Size = chunk
+		} else {
+			size, err := parseImm(c, lineNo)
+			if err != nil {
+				return inst, err
+			}
+			inst.Size = size
 		}
-		inst.Size = size
 
 	case ir.OpArenaAlloc:
 		arena, err := c.reg(lineNo)

@@ -209,7 +209,11 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.saveAll()
 		x.movImm(int64(inst.Tier), "%rdi")
 		x.movImm(inst.Size, "%rsi")
-		x.line("\tcall arc_arena_create")
+		fn := "arc_arena_create"
+		if inst.Growable {
+			fn = "arc_arena_create_growable"
+		}
+		x.line("\tcall %s", fn)
 		x.line("\tmovq %%rax, %s", scratch2)
 		x.restoreAll()
 		x.store(scratch2, inst.Dst)

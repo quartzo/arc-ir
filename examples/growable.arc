@@ -1,0 +1,12 @@
+; growable.arc - an extensible arena that outgrows its first chunk.
+; Chunks are 64 bytes; the second allocation forces a new chunk.
+func main:
+    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)
+    r2 = ARENA_ALLOC r1, 64      ; fills chunk 1
+    r3 = ARENA_ALLOC r1, 64      ; forces a second chunk
+    r4 = 77
+    STORE [r3], r4
+    r5 = LOAD [r3]
+    PRINT r5
+    ARENA_DESTROY r1
+    RET r5

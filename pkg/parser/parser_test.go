@@ -164,6 +164,25 @@ func TestParseOwnParam(t *testing.T) {
 	}
 }
 
+func TestParseGrowableArena(t *testing.T) {
+	prog, err := Parse("r1 = ARENA_CREATE DRAM_LOCAL, growable(4096)\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	in := prog.Instrs[0]
+	if in.Op != ir.OpArenaCreate || !in.Growable || in.Size != 4096 || in.Tier != ir.DRAMLocal {
+		t.Errorf("growable arena parsed as %+v", in)
+	}
+
+	fixed, err := Parse("r1 = ARENA_CREATE CXL_POOLED, 128\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if fixed.Instrs[0].Growable || fixed.Instrs[0].Size != 128 {
+		t.Errorf("fixed arena parsed as %+v", fixed.Instrs[0])
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -179,6 +198,8 @@ func TestParseErrors(t *testing.T) {
 		{"ptr return without size", "func f() -> ptr:\n    RET\n", "requires a size"},
 		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown parameter type"},
 		{"own on non-arena", "func f(r1: own scalar):\n    RET\n", "only valid for arena"},
+		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
+		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

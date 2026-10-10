@@ -114,7 +114,7 @@ func TestVerifyRejections(t *testing.T) {
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 8\n" +
 				"    r2 = ARENA_ALLOC r1, 64\n" +
 				"    RET\n",
-			"exceeds arena capacity",
+			"exceeds capacity",
 		},
 		{
 			"double destroy",
@@ -457,6 +457,115 @@ func TestVerifyTypedMemory(t *testing.T) {
 			"untyped load is scalar",
 			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    ARENA_DESTROY r1\n    RET\n",
 			"expected data pointer",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyCapacity(t *testing.T) {
+	// Cumulative over-allocation is rejected, even though each allocation fits.
+	over := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
+		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    r4 = ARENA_ALLOC r1, 64\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, over)); err == nil || !strings.Contains(err.Error(), "arena exhausted") {
+		t.Fatalf("expected cumulative exhaustion, got %v", err)
+	}
+
+	// An exact fit is accepted.
+	fits := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
+		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, fits)); err != nil {
+		t.Fatalf("expected exact fit to verify, got %v", err)
+	}
+
+	// Capacity is enforced across a function boundary via arena(<size>).
+	across := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    CALL fill\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n" +
+		"func fill(r1: arena(64)):\n" +
+		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, across)); err == nil || !strings.Contains(err.Error(), "arena exhausted") {
+		t.Fatalf("expected cross-function exhaustion, got %v", err)
+	}
+}
+
+func FuzzVerify(f *testing.F) {
+	f.Add("entry:\n    r1 = 1\n    RET\n")
+	f.Add("func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    RET\n")
+	f.Add("func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, 64\n    ARENA_DESTROY r1\n    RET\n")
+	f.Fuzz(func(t *testing.T, src string) {
+		prog, err := parser.Parse(src)
+		if err != nil {
+			return
+		}
+		// The verifier must never panic or hang on arbitrary input.
+		_, _ = Verify(prog)
+	})
+}
+
+func TestVerifyGrowableArena(t *testing.T) {
+	// Many allocations exceed any single chunk; the arena grows.
+	valid := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
+		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    r3 = ARENA_ALLOC r1, 64\n" +
+		"    r4 = ARENA_ALLOC r1, 64\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, valid)); err != nil {
+		t.Fatalf("expected growable to verify, got %v", err)
+	}
+
+	// A growable arena satisfies any declared parameter capacity.
+	across := "func main:\n" +
+		"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
+		"    CALL fill\n" +
+		"    ARENA_DESTROY r1\n" +
+		"    RET\n" +
+		"func fill(r1: arena(4096)):\n" +
+		"    r2 = ARENA_ALLOC r1, 64\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, across)); err != nil {
+		t.Fatalf("expected growable to satisfy arena(4096), got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"allocation larger than chunk",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, 128\n    ARENA_DESTROY r1\n    RET\n",
+			"exceeds chunk size",
+		},
+		{
+			"fixed arena smaller than declared parameter capacity",
+			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    CALL fill\n    ARENA_DESTROY r1\n    RET\n" +
+				"func fill(r1: arena(4096)):\n    r2 = ARENA_ALLOC r1, 64\n    RET\n",
+			"smaller than the declared",
 		},
 	}
 	for _, tc := range cases {

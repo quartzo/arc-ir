@@ -97,11 +97,18 @@ an arena invalidates every pointer derived from it.
 
 | Instruction | Semantics |
 |-------------|-----------|
-| `rdst = ARENA_CREATE <tier>, <size>` | create an arena of `size` bytes |
+| `rdst = ARENA_CREATE <tier>, <size>` | create a **fixed** arena of `size` bytes |
+| `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a **growable** arena whose chunks are `chunk` bytes |
 | `rdst = ARENA_ALLOC rsrc, <size>` | allocate `size` bytes inside arena `rsrc`; `rdst` is a data pointer |
 | `ARENA_DESTROY rsrc` | free arena `rsrc` and invalidate its pointers |
 
 Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`).
+
+A **fixed** arena has a capacity that the verifier proves the cumulative
+allocation never exceeds. A **growable** arena starts with one chunk and adds
+another whenever the current one is full; the verifier only requires each
+allocation to fit in a single chunk. A growable arena may abort on
+out-of-memory (a safe failure), whereas a fixed arena never fails at run time.
 
 ### 4.5 Control flow
 

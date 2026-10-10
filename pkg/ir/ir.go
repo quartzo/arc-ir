@@ -227,14 +227,15 @@ func (m Mem) String() string {
 //	OpJmp          Label
 //	Jcc            Src[0], and Src[1] or Imm, Label
 type Instruction struct {
-	Op    OpCode
-	Dst   Register
-	Src   [2]Register
-	Imm   int64
-	Mem   Mem
-	Label string
-	Tier  TopologyTier
-	Size  int64
+	Op       OpCode
+	Dst      Register
+	Src      [2]Register
+	Imm      int64
+	Mem      Mem
+	Label    string
+	Tier     TopologyTier
+	Size     int64
+	Growable bool // OpArenaCreate: extensible arena; Size is the chunk size
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
@@ -275,6 +276,9 @@ func (i Instruction) String() string {
 		}
 		return fmt.Sprintf("%s%d", dst, i.Imm)
 	case OpArenaCreate:
+		if i.Growable {
+			return fmt.Sprintf("%sARENA_CREATE %s, growable(%d)", dst, i.Tier, i.Size)
+		}
 		return fmt.Sprintf("%sARENA_CREATE %s, %d", dst, i.Tier, i.Size)
 	case OpArenaAlloc:
 		return fmt.Sprintf("%sARENA_ALLOC %s, %d", dst, i.Src[0], i.Size)

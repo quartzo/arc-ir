@@ -10,6 +10,9 @@ front end is written in Go and mirrors the eBPF verifier: untrusted programs
 (often produced by an LLVM/LLM) are *proven* memory-safe by an abstract
 interpreter before any machine code is emitted.
 
+> **Docs:** [Vision](docs/vision.md) · [Safety contract](docs/safety.md) ·
+> [Assembly reference](docs/assembly.md) · [AGENTS.md](AGENTS.md)
+
 ```
  Source (.arc)   →   Parser (Go)   →   ARC assembly   →   Verifier (Go)   →   x86_64 asm   →   Binary
       text            text/scanner      r0..r15,           abstract           GNU as
@@ -38,6 +41,7 @@ verification and code generation stay simple and direct.
 | — | Non-scalar returns: `-> arena`, `-> ptr(size)` | ✅ |
 | — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
+| — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
 
 ## Layout
 
@@ -187,6 +191,15 @@ func consume(r1: own arena):
 
 This is what makes use-after-free across calls detectable — the case that plain
 modular type checking missed.
+
+## Arenas
+
+An arena is created either **fixed** (`ARENA_CREATE DRAM_LOCAL, 4096`) — the
+verifier proves the cumulative allocation never exceeds the capacity, so it
+never fails at run time — or **growable**
+(`ARENA_CREATE DRAM_LOCAL, growable(4096)`), which adds chunks on demand and
+may abort on out-of-memory. Growable arenas trade the stronger guarantee for
+flexibility and tiered growth; both are memory-safe.
 
 ## Typed memory
 

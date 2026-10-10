@@ -121,6 +121,10 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r1, 128\n" +
 			"    r3 = ARENA_ALLOC r1, 8\n    r4 = 99\n    STORE [r3], r4\n    STORE [r2], r3\n" +
 			"    r5 = LOAD [r2]\n    r6 = LOAD [r5]\n    PRINT r6\n    ARENA_DESTROY r1\n    RET r6\n", "99"},
+		{"growable", "func main:\n" +
+			"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n    r2 = ARENA_ALLOC r1, 64\n" +
+			"    r3 = ARENA_ALLOC r1, 64\n    r4 = 77\n    STORE [r3], r4\n    r5 = LOAD [r3]\n" +
+			"    PRINT r5\n    ARENA_DESTROY r1\n    RET r5\n", "77"},
 	}
 
 	for _, tc := range cases {
