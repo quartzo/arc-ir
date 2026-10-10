@@ -102,13 +102,19 @@ type VecKind int
 const (
 	// VecF32x4 is four 32-bit floats.
 	VecF32x4 VecKind = iota
+	// VecF64x2 is two 64-bit floats.
+	VecF64x2
 	// VecI32x4 is four 32-bit integers.
 	VecI32x4
+	// VecI64x2 is two 64-bit integers.
+	VecI64x2
 )
 
 var vecKindNames = map[VecKind]string{
 	VecF32x4: "f32x4",
+	VecF64x2: "f64x2",
 	VecI32x4: "i32x4",
+	VecI64x2: "i64x2",
 }
 
 // String returns the textual name of the vector kind.
@@ -469,10 +475,15 @@ func formatRet(kind ValKind, size int64) string {
 func formatLanes(i Instruction) string {
 	parts := make([]string, len(i.Lanes))
 	for j, v := range i.Lanes {
-		if i.Vec == VecF32x4 {
+		switch i.Vec {
+		case VecF32x4:
 			parts[j] = fmt.Sprintf("%v", math.Float32frombits(uint32(v)))
-		} else {
+		case VecF64x2:
+			parts[j] = fmt.Sprintf("%v", math.Float64frombits(uint64(v)))
+		case VecI32x4:
 			parts[j] = fmt.Sprintf("%d", int32(v))
+		default:
+			parts[j] = fmt.Sprintf("%d", v)
 		}
 	}
 	return strings.Join(parts, ", ")

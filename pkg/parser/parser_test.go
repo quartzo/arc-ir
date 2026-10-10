@@ -250,6 +250,19 @@ func TestParseSIMD(t *testing.T) {
 	}
 }
 
+func TestParseSIMD64(t *testing.T) {
+	prog, err := Parse("v1 = f64x2(1.5, 2.5)\nv2 = i64x2(9)\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if in := prog.Instrs[0]; in.Op != ir.OpVConst || in.Vec != ir.VecF64x2 || len(in.Lanes) != 2 {
+		t.Errorf("f64x2 const parsed as %+v", in)
+	}
+	if in := prog.Instrs[1]; in.Op != ir.OpVConst || in.Vec != ir.VecI64x2 || len(in.Lanes) != 2 || in.Lanes[1] != 9 {
+		t.Errorf("i64x2 broadcast parsed as %+v", in)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	cases := []struct {
 		name string

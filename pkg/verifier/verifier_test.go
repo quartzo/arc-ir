@@ -663,6 +663,16 @@ func TestVerifySIMD(t *testing.T) {
 		t.Fatalf("expected simd program to verify, got %v", err)
 	}
 
+	valid64 := "func main:\n" +
+		"    v1 = f64x2(1.5, 2.5)\n" +
+		"    v2 = f64x2(10.0, 20.0)\n" +
+		"    v3 = VADD.f64x2 v1, v2\n" +
+		"    PRINTV.f64x2 v3\n" +
+		"    RET\n"
+	if _, err := Verify(mustParse(t, valid64)); err != nil {
+		t.Fatalf("expected f64x2 program to verify, got %v", err)
+	}
+
 	cases := []struct {
 		name string
 		src  string
@@ -671,6 +681,8 @@ func TestVerifySIMD(t *testing.T) {
 		{"mixing kinds", "func main:\n    v1 = f32x4(1.0)\n    v2 = i32x4(1)\n    v3 = VADD.f32x4 v1, v2\n    RET\n", "expected f32x4"},
 		{"print kind mismatch", "func main:\n    v1 = i32x4(1)\n    PRINTV.f32x4 v1\n    RET\n", "expected f32x4"},
 		{"scalar op on vector", "func main:\n    v1 = f32x4(1.0)\n    r1 = ADD v1, v1\n    RET\n", "expected scalar"},
+		{"packed 64-bit multiply", "func main:\n    v1 = i64x2(1)\n    v2 = VMUL.i64x2 v1, v1\n    RET\n", "not available"},
+		{"packed integer divide", "func main:\n    v1 = i32x4(1)\n    v2 = VDIV.i32x4 v1, v1\n    RET\n", "not available"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

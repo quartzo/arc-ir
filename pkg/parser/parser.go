@@ -209,12 +209,11 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 			inst.Op = ir.OpFConst
 			inst.F32 = true
 			inst.FImm = v
-		} else if (mnem == "f32x4" || mnem == "i32x4") && c.peekAt(1) == "(" {
+		} else if k, ok := ir.ParseVecKind(mnem); ok && c.peekAt(1) == "(" {
 			if !dst.IsVec() {
 				return ir.Instruction{}, fmt.Errorf("line %d: a vector literal requires a vector register (v0..v15)", lineNo)
 			}
-			k, _ := ir.ParseVecKind(mnem)
-			c.pos += 2 // consume "f32x4" "("
+			c.pos += 2 // consume the kind and "("
 			lanes, err := parseLanes(c, k, lineNo)
 			if err != nil {
 				return ir.Instruction{}, err
@@ -737,16 +736,28 @@ func isFloatToken(tok string) bool {
 }
 
 // parseLanes parses the lane list of a vector literal, broadcasting a single
-// lane to all four.
+// lane to all lanes.
 func parseLanes(c *cursor, k ir.VecKind, lineNo int) ([]int64, error) {
+	count := 4
+	is64 := false
+	isFloat := k == ir.VecF32x4 || k == ir.VecF64x2
+	switch k {
+	case ir.VecF64x2, ir.VecI64x2:
+		count = 2
+		is64 = true
+	}
 	var lanes []int64
 	for {
-		if k == ir.VecF32x4 {
+		if isFloat {
 			v, err := parseFloat(c, lineNo)
 			if err != nil {
 				return nil, err
 			}
-			lanes = append(lanes, int64(math.Float32bits(float32(v))))
+			if is64 {
+				lanes = append(lanes, int64(math.Float64bits(v)))
+			} else {
+				lanes = append(lanes, int64(math.Float32bits(float32(v))))
+			}
 		} else {
 			v, err := parseImm(c, lineNo)
 			if err != nil {
@@ -762,12 +773,12 @@ func parseLanes(c *cursor, k ir.VecKind, lineNo int) ([]int64, error) {
 	}
 	if len(lanes) == 1 {
 		b := lanes[0]
-		for len(lanes) < 4 {
+		for len(lanes) < count {
 			lanes = append(lanes, b)
 		}
 	}
-	if len(lanes) != 4 {
-		return nil, fmt.Errorf("line %d: a vector literal needs 1 or 4 lanes, got %d", lineNo, len(lanes))
+	if len(lanes) != count {
+		return nil, fmt.Errorf("line %d: a vector literal needs 1 or %d lanes, got %d", lineNo, count, len(lanes))
 	}
 	return lanes, nil
 }

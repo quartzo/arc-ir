@@ -383,7 +383,7 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.restoreAll()
 
 	case ir.OpVConst:
-		lbl := x.vecConstLabel(inst.Lanes)
+		lbl := x.vecConstLabel(inst.Vec, inst.Lanes)
 		if phys := x.physOf[inst.Dst]; phys != "" {
 			x.line("\tmovdqu %s(%%rip), %s", lbl, phys)
 		} else {
@@ -404,14 +404,25 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.saveAll()
 		src := x.loadF(inst.Src[0], xmmScratch1)
 		x.line("\tmovdqu %s, %d(%%rbp)", src, x.vecScratch)
-		for i := 0; i < 4; i++ {
-			off := x.vecScratch + i*4
-			if inst.Vec == ir.VecF32x4 {
+		n, step := 4, 4
+		if inst.Vec == ir.VecF64x2 || inst.Vec == ir.VecI64x2 {
+			n, step = 2, 8
+		}
+		for i := 0; i < n; i++ {
+			off := x.vecScratch + i*step
+			switch inst.Vec {
+			case ir.VecF32x4:
 				x.line("\tmovss %d(%%rbp), %%xmm0", off)
 				x.line("\tcvtss2sd %%xmm0, %%xmm0")
 				x.line("\tcall arc_print_f64")
-			} else {
+			case ir.VecF64x2:
+				x.line("\tmovsd %d(%%rbp), %%xmm0", off)
+				x.line("\tcall arc_print_f64")
+			case ir.VecI32x4:
 				x.line("\tmovslq %d(%%rbp), %%rdi", off)
+				x.line("\tcall arc_print")
+			default: // i64x2
+				x.line("\tmovq %d(%%rbp), %%rdi", off)
 				x.line("\tcall arc_print")
 			}
 		}
@@ -585,7 +596,8 @@ func sanitize(label string) string {
 }
 
 func vecMnem(op ir.OpCode, k ir.VecKind) string {
-	if k == ir.VecI32x4 {
+	switch k {
+	case ir.VecI32x4:
 		switch op {
 		case ir.OpVSub:
 			return "psubd"
@@ -594,27 +606,45 @@ func vecMnem(op ir.OpCode, k ir.VecKind) string {
 		default:
 			return "paddd"
 		}
-	}
-	switch op {
-	case ir.OpVSub:
-		return "subps"
-	case ir.OpVMul:
-		return "mulps"
-	case ir.OpVDiv:
-		return "divps"
+	case ir.VecI64x2:
+		if op == ir.OpVSub {
+			return "psubq"
+		}
+		return "paddq"
 	default:
-		return "addps"
+		suf := "ps"
+		if k == ir.VecF64x2 {
+			suf = "pd"
+		}
+		switch op {
+		case ir.OpVSub:
+			return "sub" + suf
+		case ir.OpVMul:
+			return "mul" + suf
+		case ir.OpVDiv:
+			return "div" + suf
+		default:
+			return "add" + suf
+		}
 	}
 }
 
-func (x *x64) vecConstLabel(lanes []int64) string {
+func (x *x64) vecConstLabel(k ir.VecKind, lanes []int64) string {
 	var c [16]byte
-	for i := 0; i < 4 && i < len(lanes); i++ {
-		v := uint32(lanes[i])
-		c[i*4] = byte(v)
-		c[i*4+1] = byte(v >> 8)
-		c[i*4+2] = byte(v >> 16)
-		c[i*4+3] = byte(v >> 24)
+	if k == ir.VecF64x2 || k == ir.VecI64x2 {
+		for i := 0; i < 2 && i < len(lanes); i++ {
+			v := uint64(lanes[i])
+			for j := 0; j < 8; j++ {
+				c[i*8+j] = byte(v >> (8 * j))
+			}
+		}
+	} else {
+		for i := 0; i < 4 && i < len(lanes); i++ {
+			v := uint32(lanes[i])
+			for j := 0; j < 4; j++ {
+				c[i*4+j] = byte(v >> (8 * j))
+			}
+		}
 	}
 	x.consts = append(x.consts, c)
 	return fmt.Sprintf(".LCV%d", len(x.consts)-1)

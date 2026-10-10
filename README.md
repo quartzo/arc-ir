@@ -43,7 +43,7 @@ verification and code generation stay simple and direct.
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
 | — | Base types: `f64`/`f32` scalars in a separate vector register file (`v0`–`v15`) | ✅ |
-| — | SIMD vectors: `f32x4`/`i32x4` packed arithmetic (type-level) | ✅ |
+| — | SIMD vectors: `f32x4`/`f64x2`/`i32x4`/`i64x2` packed arithmetic (type-level) | ✅ |
 
 ## Layout
 

@@ -45,8 +45,12 @@ const (
 	TypeF64
 	// TypeF32x4 is a 128-bit vector of four f32.
 	TypeF32x4
+	// TypeF64x2 is a 128-bit vector of two f64.
+	TypeF64x2
 	// TypeI32x4 is a 128-bit vector of four i32.
 	TypeI32x4
+	// TypeI64x2 is a 128-bit vector of two i64.
+	TypeI64x2
 	// TypeArena is an arena handle.
 	TypeArena
 	// TypeDataPtr is a pointer into an arena allocation.
@@ -64,8 +68,12 @@ func (t RegType) String() string {
 		return "f64"
 	case TypeF32x4:
 		return "f32x4"
+	case TypeF64x2:
+		return "f64x2"
 	case TypeI32x4:
 		return "i32x4"
+	case TypeI64x2:
+		return "i64x2"
 	case TypeArena:
 		return "arena"
 	case TypeDataPtr:
@@ -509,6 +517,14 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if !inst.Dst.IsVec() {
 			return v.errf(inst, "a vector result requires a vector register")
 		}
+		if inst.Vec == ir.VecI32x4 || inst.Vec == ir.VecI64x2 {
+			if inst.Op == ir.OpVDiv {
+				return v.errf(inst, "packed integer division is not available")
+			}
+			if inst.Op == ir.OpVMul && inst.Vec == ir.VecI64x2 {
+				return v.errf(inst, "packed 64-bit multiply is not available")
+			}
+		}
 		vt := vecType(inst.Vec)
 		if _, err := v.vecOf(st, inst.Src[0], vt, inst); err != nil {
 			return err
@@ -738,10 +754,16 @@ func (v *Verifier) floatOf(st *State, r ir.Register, ft RegType, inst ir.Instruc
 }
 
 func vecType(k ir.VecKind) RegType {
-	if k == ir.VecI32x4 {
+	switch k {
+	case ir.VecF64x2:
+		return TypeF64x2
+	case ir.VecI32x4:
 		return TypeI32x4
+	case ir.VecI64x2:
+		return TypeI64x2
+	default:
+		return TypeF32x4
 	}
-	return TypeF32x4
 }
 
 func (v *Verifier) vecOf(st *State, r ir.Register, want RegType, inst ir.Instruction) (*RegState, error) {

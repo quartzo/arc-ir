@@ -169,13 +169,16 @@ index, so floats do not affect the memory-safety guarantee.
 | Instruction | Semantics |
 |-------------|-----------|
 | `vdst = f32x4(a, b, c, d)` | 128-bit vector of four `f32` (`f32x4(x)` broadcasts) |
+| `vdst = f64x2(a, b)` | 128-bit vector of two `f64` |
 | `vdst = i32x4(a, b, c, d)` | 128-bit vector of four `i32` |
+| `vdst = i64x2(a, b)` | 128-bit vector of two `i64` |
 | `vdst = VADD.<kind> va, vb` | packed add (`VSUB`, `VMUL`; `VDIV` for float kinds) |
-| `PRINTV.<kind> vsrc` | print the four lanes, one per line |
+| `PRINTV.<kind> vsrc` | print the lanes, one per line |
 
-`<kind>` is `f32x4` or `i32x4`. Vectors live in vector registers; the verifier
-tracks the vector type (element kind and width) but not per-lane values, and
-requires the two operands of an operation to have the same kind.
+`<kind>` is `f32x4`, `f64x2`, `i32x4` or `i64x2`. Vectors live in vector
+registers; the verifier tracks the vector type (element kind and width) but not
+per-lane values, and requires the two operands of an operation to have the same
+kind. Packed integer division and packed 64-bit multiply are not available.
 
 ## 5. Memory model
 
