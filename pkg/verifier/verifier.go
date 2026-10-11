@@ -23,11 +23,18 @@
 package verifier
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
 	"arc-ir/pkg/ir"
 )
+
+// errArenaMerge reports a join that would merge two different arena handles
+// into one register (or memory cell). The value would be "one of several
+// arenas", for which no single capacity can be accounted, so it is rejected
+// instead of approximated: allocating from it would be unverifiable.
+var errArenaMerge = errors.New("arena handle may be one of several arenas at this join; branch on a single arena")
 
 // RegType is the abstract type of a register.
 type RegType int
@@ -324,7 +331,11 @@ func Verify(prog *ir.Program) (*Result, error) {
 				return nil, err
 			}
 			for target, out := range succ {
-				if v.mergeInto(target, out) {
+				changed, err := v.mergeInto(target, out)
+				if err != nil {
+					return nil, err
+				}
+				if changed {
 					work = append(work, target)
 				}
 			}
@@ -459,7 +470,9 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			inst = unsignedCompare(inst, rs.Type)
 			b.Instrs[ii] = inst
 			taken := refine(*st, inst, true)
-			mergeEdge(out, v.f.Index[inst.Label], taken)
+			if err := mergeEdge(out, v.f.Index[inst.Label], taken); err != nil {
+				return nil, v.errf(inst, "%s", err)
+			}
 			*st = refine(*st, inst, false)
 
 		default:
@@ -484,12 +497,17 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 	return out, nil
 }
 
-func mergeEdge(m map[int]State, target int, st State) {
+func mergeEdge(m map[int]State, target int, st State) error {
 	if prev, ok := m[target]; ok {
-		m[target] = mergeStates(prev, st)
+		merged, err := mergeStates(prev, st)
+		if err != nil {
+			return err
+		}
+		m[target] = merged
 	} else {
 		m[target] = st.clone()
 	}
+	return nil
 }
 
 // resolve lowers a field access to a concrete load/store at a static offset.
@@ -572,6 +590,12 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		arena, err := v.arena(st, inst.Src[0], inst)
 		if err != nil {
 			return err
+		}
+		// Defence in depth: a merged handle is rejected at the merge itself,
+		// so this is unreachable, but an arena with unknown identity must never
+		// be used to allocate (its capacity cannot be accounted).
+		if arena.RefID == -1 {
+			return v.errf(inst, "cannot allocate from an arena that may be one of several arenas")
 		}
 		if inst.Size <= 0 {
 			return v.errf(inst, "allocation size must be positive, got %d", inst.Size)
@@ -1461,7 +1485,9 @@ func (v *Verifier) jvariant(st *State, out map[int]State, inst ir.Instruction) e
 	if ptr.Variant < 0 || ptr.Variant == inst.Variant {
 		taken := st.clone()
 		taken.Regs[inst.Src[0]].Variant = inst.Variant
-		mergeEdge(out, v.f.Index[inst.Label], taken)
+		if err := mergeEdge(out, v.f.Index[inst.Label], taken); err != nil {
+			return v.errf(inst, "%s", err)
+		}
 	}
 	if ptr.Variant == inst.Variant {
 		ptr.Variant = -1
@@ -1566,19 +1592,32 @@ func (v *Verifier) errf(inst ir.Instruction, format string, args ...any) error {
 
 // mergeInto merges out into the entry state of target, returning true if the
 // state changed (and the block must be reprocessed).
-func (v *Verifier) mergeInto(target int, out State) bool {
+func (v *Verifier) mergeInto(target int, out State) (bool, error) {
 	cur := v.in[target]
 	if cur == nil {
 		c := out.clone()
 		v.in[target] = &c
-		return true
+		return true, nil
 	}
-	merged := mergeStates(*cur, out)
+	merged, err := mergeStates(*cur, out)
+	if err != nil {
+		return false, v.mergeErr(target, err)
+	}
 	if stateEqual(merged, *cur) {
-		return false
+		return false, nil
 	}
 	v.in[target] = &merged
-	return true
+	return true, nil
+}
+
+// mergeErr attributes a merge failure to the join point (the target block's
+// first instruction), so the diagnostic points at where the paths meet.
+func (v *Verifier) mergeErr(target int, err error) error {
+	line := 0
+	if is := v.f.Blocks[target].Instrs; len(is) > 0 {
+		line = is[0].Line
+	}
+	return &Error{Line: line, Msg: err.Error()}
 }
 
 func stateEqual(a, b State) bool {
@@ -1608,7 +1647,12 @@ func stateEqual(a, b State) bool {
 // kept only if it is defined on both incoming edges. Provenance is merged per
 // axis, so a pointer keeps its arena identity when both paths agree on it even
 // if they differ in allocation identity.
-func mergeStates(a, b State) State {
+//
+// One join is rejected outright: an arena handle that would become "one of
+// several arenas". Unlike a data pointer, a handle names a single arena whose
+// capacity is accounted separately, so there is no sound approximation — see
+// errArenaMerge.
+func mergeStates(a, b State) (State, error) {
 	var m State
 	for r := 0; r < ir.NumRegs; r++ {
 		ra, rb := a.Regs[r], b.Regs[r]
@@ -1618,6 +1662,9 @@ func mergeStates(a, b State) State {
 		if ra.Type != rb.Type {
 			m.Regs[r] = RegState{Defined: true, Type: TypeUnknown, RefID: -1, AllocID: -1}
 			continue
+		}
+		if ra.Type == TypeArena && ra.RefID != rb.RefID {
+			return State{}, errArenaMerge
 		}
 		ra.Min = min64(ra.Min, rb.Min)
 		ra.Max = max64(ra.Max, rb.Max)
@@ -1643,9 +1690,13 @@ func mergeStates(a, b State) State {
 		}
 		m.Regs[r] = ra
 	}
-	m.Mem = mergeMem(a.Mem, b.Mem)
+	mem, err := mergeMem(a.Mem, b.Mem)
+	if err != nil {
+		return State{}, err
+	}
+	m.Mem = mem
 	m.Used = mergeUsed(a.Used, b.Used)
-	return m
+	return m, nil
 }
 
 // mergeUsed joins the per-arena allocated-bytes maps conservatively: a key
@@ -1667,9 +1718,9 @@ func mergeUsed(a, b map[int]int64) map[int]int64 {
 	return out
 }
 
-func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
+func mergeMem(a, b map[MemKey]RegState) (map[MemKey]RegState, error) {
 	if len(a) == 0 || len(b) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[MemKey]RegState, len(a))
 	for k, va := range a {
@@ -1681,6 +1732,11 @@ func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
 			out[k] = RegState{Type: TypeUnknown, RefID: -1, AllocID: -1}
 			continue
 		}
+		// A stored arena handle merges like a register one: two different
+		// arenas in the same cell cannot be approximated.
+		if va.Type == TypeArena && va.RefID != vb.RefID {
+			return nil, errArenaMerge
+		}
 		va.AllocSize = minAlloc(va.AllocSize, vb.AllocSize)
 		if va.RefID != vb.RefID {
 			va.RefID = -1
@@ -1691,9 +1747,9 @@ func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
 		out[k] = va
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
-	return out
+	return out, nil
 }
 
 func minAlloc(a, b int64) int64 {

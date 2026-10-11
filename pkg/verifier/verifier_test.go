@@ -321,6 +321,81 @@ func TestVerifyExplicitTerminator(t *testing.T) {
 	}
 }
 
+func TestVerifyArenaMerge(t *testing.T) {
+	// The same arena on both paths merges to that arena: the handle is still
+	// usable.
+	same := "func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 16\n" +
+		"    r1 = 0\n" +
+		"    JEQ r1, 0, b\n" +
+		"    s2 = s0\n" +
+		"    JMP done\n" +
+		"b:\n" +
+		"    s2 = s0\n" +
+		"done:\n" +
+		"    r2 = ARENA_ALLOC s2, [i64; 1]\n" +
+		"    RET\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, same)); err != nil {
+		t.Fatalf("same arena: expected success, got %v", err)
+	}
+
+	// Two different arena sites feeding one register make an ambiguous handle
+	// ("one of several arenas"), which is rejected at the join. The rejection
+	// must not depend on the fixpoint's edge order.
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			"two create sites",
+			"func main -> i64\n" +
+				"    r1 = 0\n" +
+				"    JEQ r1, 0, b\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 16\n" +
+				"    JMP done\n" +
+				"b:\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 16\n" +
+				"done:\n" +
+				"    r2 = ARENA_ALLOC s0, [i64; 1]\n" +
+				"    RET\n" +
+				"endfunc\n",
+		},
+		{
+			"parameter or local arena",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 32\n" +
+				"    r1 = s0\n" +
+				"    CALL helper\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func helper(r1: arena(32)) -> i64\n" +
+				"    r2 = 0\n" +
+				"    JEQ r2, 0, local\n" +
+				"    s0 = r1\n" +
+				"    JMP use\n" +
+				"local:\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 32\n" +
+				"use:\n" +
+				"    RET\n" +
+				"endfunc\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := 0; i < 20; i++ {
+				_, err := Verify(mustParse(t, tc.src))
+				if err == nil {
+					t.Fatalf("iteration %d: expected rejection, got success", i)
+				}
+				if !strings.Contains(err.Error(), "may be one of several arenas") {
+					t.Fatalf("error = %q, want substring %q", err.Error(), "may be one of several arenas")
+				}
+			}
+		})
+	}
+}
+
 func TestVerifyNonScalarReturns(t *testing.T) {
 	// A pointer into a caller-owned region can be returned: the region outlives
 	// the call.

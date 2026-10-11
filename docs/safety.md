@@ -55,9 +55,11 @@ a signed range and width), arena handle (with reference identity and capacity),
 or data pointer (with arena, allocation identity and size). It also
 tracks the type of statically-addressed memory cells and the bytes allocated so
 far from each arena. States flow along edges and merge at joins (a conservative
-union). Conditional jumps refine integer ranges on each edge. A region is
-function-scoped: it is released when the function that creates it returns, and it
-cannot escape that function.
+union). Conditional jumps refine integer ranges on each edge. A join that would
+merge two different arena handles is rejected rather than approximated: the
+value would name one of several arenas, whose capacity cannot be accounted. A
+region is function-scoped: it is released when the function that creates it
+returns, and it cannot escape that function.
 
 ## Non-goals / known threats
 

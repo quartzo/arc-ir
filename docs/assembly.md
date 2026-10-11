@@ -339,6 +339,10 @@ release.
   region belongs to the caller. To build data across a call, the caller creates
   the region and passes it down; a callee may return a pointer into it, because
   the region outlives the call.
+- Two different arena handles may not meet at a control-flow join: the merged
+  value would be "one of several arenas", with no single capacity to account, so
+  it is rejected. A register that carries an arena must name the same arena on
+  every path that reaches the join.
 
 ```
 func main -> i64
