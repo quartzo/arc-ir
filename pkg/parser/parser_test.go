@@ -183,6 +183,20 @@ func TestParseArenaParam(t *testing.T) {
 	if p1 := prog.Instrs[0].Params[1]; p1.Kind != ir.KindPtr {
 		t.Errorf("ptr param parsed as %+v", p1)
 	}
+
+	stackProg, err := Parse("func f(r1: stack(64)) -> i64\n" +
+		"    RET\n" +
+		"endfunc\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p := stackProg.Instrs[0].Params[0]; p.Kind != ir.KindArena || !p.Stack || p.Size != 64 {
+		t.Errorf("stack param parsed as %+v", p)
+	}
+
+	if _, err := Parse("func f(r1: stack(0)) -> i64\n    RET\nendfunc\n"); err == nil {
+		t.Error("expected a non-positive stack budget to be rejected")
+	}
 }
 
 func TestParseGrowableArena(t *testing.T) {
@@ -201,6 +215,14 @@ func TestParseGrowableArena(t *testing.T) {
 	}
 	if fixed.Instrs[0].Growable || fixed.Instrs[0].Size != 128 {
 		t.Errorf("fixed arena parsed as %+v", fixed.Instrs[0])
+	}
+
+	stack, err := Parse("r1 = ARENA_CREATE STACK, 64\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if in := stack.Instrs[0]; in.Tier != ir.Stack || in.Growable || in.Size != 64 {
+		t.Errorf("stack arena parsed as %+v", in)
 	}
 }
 

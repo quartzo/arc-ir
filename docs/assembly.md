@@ -122,13 +122,22 @@ an arena invalidates every pointer derived from it.
 | `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`); `rdst` is an array pointer |
 | `rdst = ARENA_ALLOC rsrc, <Struct | Enum>` | allocate `sizeof(...)` and give `rdst` the struct or enum type |
 
-Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`).
+Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`),
+plus `STACK` (frame-backed; see below).
 
 A **fixed** arena has a capacity that the verifier proves the cumulative
 allocation never exceeds. A **growable** arena starts with one chunk and adds
 another whenever the current one is full; the verifier only requires each
 allocation to fit in a single chunk. A growable arena may abort on
 out-of-memory (a safe failure), whereas a fixed arena never fails at run time.
+
+A **stack** arena (`ARENA_CREATE STACK, <size>`) is a fixed arena whose backing
+store is the creating function's frame instead of the heap. The frame reserves
+the capacity plus a cursor, so `ARENA_ALLOC` is an inline pointer bump — no
+runtime call, no `malloc` — and the region is never freed: it dies with the
+frame. A stack arena is local to its creating function (it may not be passed as
+an `arena` argument or returned); pass a pointer into it instead. Capacity is
+proven exactly as for a fixed arena. A stack arena cannot be growable.
 
 ### 4.5 Control flow
 
@@ -218,10 +227,11 @@ All pointers passed to `LOAD`/`STORE` must originate from `ARENA_ALLOC`. An
 allocation is a contiguous region `[base, base + size)`. The verifier rejects
 any access that is not provably inside a live allocation.
 
-An arena's memory tier records where its backing store lives (node-local DRAM,
-pooled CXL, persistent memory). In the reference runtime every tier shares the
-same backing store; the tier is available to a real runtime for placement
-decisions.
+An arena's memory tier records where its backing store lives. `DRAM_LOCAL`,
+`CXL_POOLED` and `PERSISTENT` name heap-backed tiers; in the reference runtime
+they share the same backing store and the tier is available to a real runtime
+for placement decisions. `STACK` is different in kind: the backing store is the
+creating function's frame, so allocation is a frame-relative pointer bump.
 
 ### Typed cells
 
@@ -282,12 +292,15 @@ The calling convention is:
   as the exit status.
 
 Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`),
-`arena`, or `ptr`. A `ptr` parameter carries the
+`arena` / `arena(size)`, `stack(size)`, or `ptr`. A `ptr` parameter carries the
 type of the region it points to — either a named struct (`ptr(Struct)`, see §9)
 or an array of scalar elements (`ptr([T; N])`, where `T` is `i8`…`i64`,
 `u8`…`u64`, `f32` or `f64`, and `N` is a positive element count). An `arena`
 parameter is **borrowed**: the callee may allocate from it but the region
-belongs to the caller (see §7):
+belongs to the caller (see §7). A `stack(size)` parameter is a stack arena
+borrowed from the caller: it may only be passed a stack arena, and `size` is the
+**budget** of bytes the callee may allocate from it (the caller must have that
+much room left, and accounts for it when the call returns).
 
 ```
 func read(r1: ptr([i64; 8])) -> i64
@@ -339,6 +352,10 @@ release.
   region belongs to the caller. To build data across a call, the caller creates
   the region and passes it down; a callee may return a pointer into it, because
   the region outlives the call.
+- A **stack** arena is released by the frame itself and is never freed. It may
+  be passed as a `stack(size)` argument (a pointer into it may always be
+  passed), but not as a plain `arena`: a heap `arena` parameter would treat it
+  as heap. It cannot be returned.
 - Two different arena handles may not meet at a control-flow join: the merged
   value would be "one of several arenas", with no single capacity to account, so
   it is rejected. A register that carries an arena must name the same arena on

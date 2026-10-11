@@ -358,6 +358,7 @@ type Verifier struct {
 	allocOf        map[[2]int]int        // (block, instr) -> allocation AllocID
 	localRefs      map[int]bool          // arena refs created in this function
 	localAllocs    map[int]bool          // allocations created in this function
+	stackRefs      map[int]bool          // stack-backed arena refs (created here or borrowed as a stack parameter): inline, never freed
 	autoFree       map[int][]ir.Register // block -> arenas to release at its RET
 	nextParamRef   int
 	nextParamAlloc int
@@ -371,6 +372,7 @@ func (v *Verifier) assignIDs() {
 	v.allocOf = map[[2]int]int{}
 	v.localRefs = map[int]bool{}
 	v.localAllocs = map[int]bool{}
+	v.stackRefs = map[int]bool{}
 	v.autoFree = map[int][]ir.Register{}
 	id := 0
 	for bi, b := range v.f.Blocks {
@@ -380,6 +382,9 @@ func (v *Verifier) assignIDs() {
 			case ir.OpArenaCreate:
 				v.refOf[key] = id
 				v.localRefs[id] = true
+				if inst.Tier == ir.Stack {
+					v.stackRefs[id] = true
+				}
 				id++
 			case ir.OpArenaAlloc:
 				v.allocOf[key] = id
@@ -408,8 +413,13 @@ func (v *Verifier) entryState() (State, error) {
 		case ir.KindArena:
 			// Capacity is unknown unless declared as arena(<size>); allocations
 			// are then bounds-checked and capacity-checked. A parameter is
-			// borrowed unless declared "own".
+			// borrowed unless declared "own". A stack arena is borrowed from the
+			// caller with a budget of Size bytes; a heap arena is always
+			// heap-backed.
 			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, AllocSize: p.Size}
+			if p.Stack {
+				v.stackRefs[v.nextParamRef] = true
+			}
 			v.nextParamRef++
 		case ir.KindPtr:
 			// A pointer parameter points into a region that outlives the call
@@ -581,6 +591,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 	case ir.OpArenaCreate:
 		if inst.Size <= 0 {
 			return v.errf(inst, "arena size must be positive, got %d", inst.Size)
+		}
+		if inst.Tier == ir.Stack && inst.Growable {
+			return v.errf(inst, "a stack arena cannot be growable; use ARENA_CREATE <tier>, growable(<chunk>)")
 		}
 		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Growable: inst.Growable, AllocSize: inst.Size}
 		st.setUsed(ref, 0)
@@ -878,6 +891,15 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				if rs.Type != TypeArena {
 					return v.errf(inst, "argument %s to %s: expected arena, got %s", p.Reg, callee.Name, rs.Type)
 				}
+				// A stack arena is backed by the caller's frame and is bumped
+				// inline; a heap arena goes through the runtime allocator. The
+				// two may not be mixed, so the parameter's kind must match.
+				if p.Stack && !v.stackRefs[rs.RefID] {
+					return v.errf(inst, "argument %s to %s: expected a stack arena (stack(...)), got a heap arena", p.Reg, callee.Name)
+				}
+				if !p.Stack && v.stackRefs[rs.RefID] {
+					return v.errf(inst, "argument %s to %s: a stack arena cannot be passed to a heap (arena) parameter", p.Reg, callee.Name)
+				}
 			case ir.KindPtr:
 				if rs.Type != TypeDataPtr {
 					return v.errf(inst, "argument %s to %s: expected a data pointer, got %s", p.Reg, callee.Name, rs.Type)
@@ -911,7 +933,20 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 					st.clearAlloc(rs.AllocID)
 				}
 			case ir.KindArena:
-				if p.Size > 0 && !rs.Growable && rs.AllocSize > 0 && rs.AllocSize < p.Size {
+				if p.Stack {
+					// The callee may allocate up to p.Size bytes from the
+					// borrowed stack arena, bumping the shared cursor. The
+					// caller must have that much room left, and must account for
+					// the callee's spending when it returns (a conservative
+					// upper bound: the callee uses at most p.Size).
+					used := st.getUsed(rs.RefID)
+					if rs.AllocSize > 0 && satAdd(used, p.Size) > rs.AllocSize {
+						return v.errf(inst,
+							"argument %s to %s: stack budget %d exceeds the arena's remaining capacity (capacity %d, %d already allocated)",
+							p.Reg, callee.Name, p.Size, rs.AllocSize, used)
+					}
+					st.setUsed(rs.RefID, satAdd(used, p.Size))
+				} else if p.Size > 0 && !rs.Growable && rs.AllocSize > 0 && rs.AllocSize < p.Size {
 					return v.errf(inst, "argument %s to %s: arena capacity %d is smaller than the declared %d",
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
 				}
@@ -1349,6 +1384,16 @@ func (v *Verifier) accessType(st *State, ptr *RegState, mem ir.Mem, inst ir.Inst
 // right machine instruction.
 func (v *Verifier) annotate(st *State, inst *ir.Instruction) error {
 	switch inst.Op {
+	case ir.OpArenaAlloc:
+		// The lowering of an allocation depends on where the backing memory
+		// lives: a stack arena is bumped inline in the frame, a heap arena goes
+		// through the runtime allocator. The creating instruction's identity
+		// tells the two apart (see stackRefs).
+		if inst.Src[0].Valid() {
+			if rs := st.Regs[inst.Src[0]]; rs.Defined && rs.Type == TypeArena && v.stackRefs[rs.RefID] {
+				inst.Stack = true
+			}
+		}
 	case ir.OpLoad, ir.OpStore:
 		ptr, err := v.dataPtr(st, inst.Mem.Base, *inst)
 		if err != nil {
@@ -1549,7 +1594,7 @@ func (v *Verifier) localRegs(st *State) []ir.Register {
 	var out []ir.Register
 	for r := 0; r < ir.NumRegs; r++ {
 		rs := st.Regs[r]
-		if rs.Defined && rs.Type == TypeArena && v.localRefs[rs.RefID] {
+		if rs.Defined && rs.Type == TypeArena && v.localRefs[rs.RefID] && !v.stackRefs[rs.RefID] {
 			out = append(out, ir.Register(r))
 		}
 	}

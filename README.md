@@ -41,7 +41,7 @@ verification and code generation stay simple and direct.
 | — | Non-integer returns: `-> ptr(...)` | ✅ |
 | — | Function-scoped regions: a region never outlives its function; escape checks, auto-free at `RET` | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
-| — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
+| — | Arena modes: fixed (capacity proven), growable (chunked, abort-on-OOM), and stack (frame-backed, inline) | ✅ |
 | — | Base types: `f64`/`f32` floats in a separate vector register file (`v0`–`v15`) | ✅ |
 | — | SIMD vectors: `f32x4`/`f64x2`/`i32x4`/`i64x2` packed arithmetic (type-level) | ✅ |
 | — | Structs: named layouts, field access, definite initialization, `ptr(Struct)` params | ✅ |
@@ -98,7 +98,8 @@ are 5/6 rather than the 5/10 the model targets.
 | Instruction | Meaning |
 |-------------|---------|
 | `rdst = <imm>` / `rdst = rsrc` | load immediate / copy |
-| `rdst = ARENA_CREATE <tier>, <size>` | create an arena |
+| `rdst = ARENA_CREATE <tier>, <size>` | create a fixed arena (`<tier>` may be `STACK`, then it is frame-backed) |
+| `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a growable arena (heap tiers only) |
 | `rdst = ARENA_ALLOC rsrc, <[T; N] | Struct>` | allocate a typed region inside an arena |
 | `rdst = LOAD [mem]` | read a value (width from the pointed-to type) |
 | `STORE [mem], rsrc` | write a value (width from the pointed-to type) |
@@ -169,10 +170,13 @@ endfunc
 ```
 
 Parameters are typed: an integer (`i8`…`i64`, `u8`…`u64`),
-`arena`, or `ptr(...)` (a data pointer to a region — a struct `ptr(Struct)` or an
-array `ptr([T; N])`). The verifier checks each function independently against its
-parameter types, and at every call site checks argument types and that a pointer
-argument is at least as large as declared. Functions may recurse.
+`arena` / `arena(size)`, `stack(size)`, or `ptr(...)` (a data pointer to a region —
+a struct `ptr(Struct)` or an array `ptr([T; N])`). The verifier checks each
+function independently against its parameter types, and at every call site checks
+argument types and that a pointer argument is at least as large as declared.
+Functions may recurse. A `stack(size)` parameter borrows a stack arena from the
+caller with a budget of `size` bytes: only a stack arena matches, and the caller
+must have that much room left (which it accounts for when the call returns).
 
 Every function declares its return type with `->` (required; e.g. `-> i64` or
 `-> ptr(...)`). The verifier checks the value returned at each `RET` against that
@@ -195,10 +199,12 @@ release. A region cannot escape its creating function — returning an `arena`, 
 local region may not be returned or stored into memory that outlives the call.
 
 - An `arena` parameter is **borrowed**: the callee may allocate from it but the
-  region belongs to the caller.
+  region belongs to the caller. A `stack(size)` parameter borrows a stack arena
+  (see [Arenas](#arenas)) with a byte budget; a plain `arena` parameter is
+  heap-backed.
 - To build data across a call, the **caller creates the region and passes it
-  down** (as an `arena` or a `ptr`). A callee can return a pointer into it,
-  because the region outlives the call.
+  down** (as an `arena`, a `stack(size)`, or a `ptr`). A callee can return a
+  pointer into it, because the region outlives the call.
 - A pointer returned from a call has unknown provenance and is conservatively
   treated as possibly local: it cannot be returned onward or stored into memory
   that outlives the call.
@@ -232,6 +238,13 @@ never fails at run time — or **growable**
 (`ARENA_CREATE DRAM_LOCAL, growable(4096)`), which adds chunks on demand and
 may abort on out-of-memory. Growable arenas trade the stronger guarantee for
 flexibility and tiered growth; both are memory-safe.
+
+A **stack** arena (`ARENA_CREATE STACK, N`) is a fixed arena whose backing store
+is the creating function's frame instead of the heap. The frame reserves `N`
+bytes (plus a cursor), so allocation is an inline pointer bump with no runtime
+call and no `malloc`; the region dies with the frame and is never freed. It can
+be passed to a callee only as a `stack(size)` parameter (a byte budget the callee
+may allocate from), never as a plain heap `arena`, and cannot be returned.
 
 ## Typed memory
 

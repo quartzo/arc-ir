@@ -82,6 +82,24 @@ func TestEmitAsmRegisterMapping(t *testing.T) {
 	}
 }
 
+// TestEmitStackArena checks that a stack arena is lowered inline: it never
+// calls the runtime allocator and is never destroyed.
+func TestEmitStackArena(t *testing.T) {
+	asm := buildAsm(t, "func main -> i64\n"+
+		"    r1 = ARENA_CREATE STACK, 64\n"+
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n"+
+		"    RET\n"+
+		"endfunc\n")
+	for _, bad := range []string{"arc_arena_create", "arc_arena_alloc", "arc_arena_destroy"} {
+		if strings.Contains(asm, bad) {
+			t.Errorf("stack arena lowered to runtime call %q:\n%s", bad, asm)
+		}
+	}
+	if !strings.Contains(asm, "(%rsp)") {
+		t.Errorf("expected a frame-relative access in:\n%s", asm)
+	}
+}
+
 // TestInlineNotAppliedWithPreserved checks that a callee which uses a preserved
 // register is left as a real call: inlining it would clobber the caller's
 // preserved values.
@@ -259,6 +277,49 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r3\n" +
 			"    RET r3\n" +
 			"endfunc\n", "42"},
+		{"stack_arena", "func main -> i64\n" +
+			"    r1 = ARENA_CREATE STACK, 128\n" +
+			"    r2 = ARENA_ALLOC r1, [i64; 16]\n" +
+			"    r3 = 0\n" +
+			"loop:\n" +
+			"    JGE r3, 10, done\n" +
+			"    STORE [r2 + r3*8], r3\n" +
+			"    r3 = ADD r3, 1\n" +
+			"    JMP loop\n" +
+			"done:\n" +
+			"    r4 = LOAD [r2 + r3*8 - 8]\n" +
+			"    PRINT r4\n" +
+			"    RET r4\n" +
+			"endfunc\n", "9"},
+		{"stack_two_arenas", "func main -> i64\n" +
+			"    s0 = ARENA_CREATE STACK, 64\n" +
+			"    r1 = ARENA_ALLOC s0, [i64; 8]\n" +
+			"    s1 = ARENA_CREATE STACK, 64\n" +
+			"    r2 = ARENA_ALLOC s1, [i64; 8]\n" +
+			"    r3 = 5\n" +
+			"    STORE [r1], r3\n" +
+			"    r4 = 6\n" +
+			"    STORE [r2], r4\n" +
+			"    r5 = LOAD [r1]\n" +
+			"    r6 = LOAD [r2]\n" +
+			"    r7 = ADD r5, r6\n" +
+			"    PRINT r7\n" +
+			"    RET r7\n" +
+			"endfunc\n", "11"},
+		{"stack_param", "func main -> i64\n" +
+			"    s0 = ARENA_CREATE STACK, 64\n" +
+			"    r1 = s0\n" +
+			"    CALL fill\n" +
+			"    r2 = LOAD [r0]\n" +
+			"    PRINT r2\n" +
+			"    RET r2\n" +
+			"endfunc\n" +
+			"func fill(r1: stack(64)) -> ptr([i64; 8])\n" +
+			"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+			"    r3 = 77\n" +
+			"    STORE [r0], r3\n" +
+			"    RET r0\n" +
+			"endfunc\n", "77"},
 		{"inline", "inline func add1(r1: i64) -> i64\n" +
 			"    r2 = ADD r1, 1\n" +
 			"    r0 = r2\n" +

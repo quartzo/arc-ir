@@ -28,6 +28,14 @@ verifier proves is never exceeded, so it never fails at run time. A
 safe failure (like Rust's default allocator), not undefined behavior. Either
 way, no allocation overflows memory.
 
+A **stack** arena is a fixed arena whose backing store is the creating
+function's frame; it is never `malloc`'d, never freed, and cannot outlive the
+function by construction. Its capacity is proven exactly like a fixed arena's,
+and allocating from it is an inline pointer bump with no runtime call. A callee
+may allocate from a borrowed stack arena only through a `stack(size)` parameter,
+whose byte budget the caller must have free and accounts for when the call
+returns, so the capacity is still proven across calls.
+
 ## Sound, not complete
 
 The verifier is **sound**: it never accepts a program that violates the

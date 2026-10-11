@@ -12,12 +12,17 @@ const (
 	CXLPooled
 	// Persistent is byte-addressable persistent memory.
 	Persistent
+	// Stack is the current function's stack frame. A stack arena is backed by
+	// the frame (not the heap), so it is always fixed and never freed: it dies
+	// with the frame.
+	Stack
 )
 
 var topologyNames = map[TopologyTier]string{
 	DRAMLocal:  "DRAM_LOCAL",
 	CXLPooled:  "CXL_POOLED",
 	Persistent: "PERSISTENT",
+	Stack:      "STACK",
 }
 
 // String returns the textual spelling of the topology tier.

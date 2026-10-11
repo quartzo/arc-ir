@@ -65,9 +65,10 @@ type x64 struct {
 	// per-function state
 	fn         *ir.Function
 	used       []ir.Register
-	preserved  []ir.Register       // written preserved regs backed up on the stack
-	slot       map[ir.Register]int // vector slot (rsp-relative)
-	backup     map[ir.Register]int // preserved backup slot (rsp-relative)
+	preserved  []ir.Register           // written preserved regs backed up on the stack
+	slot       map[ir.Register]int     // vector slot (rsp-relative)
+	backup     map[ir.Register]int     // preserved backup slot (rsp-relative)
+	stackOff   map[*ir.Instruction]int // stack arena buffer offset (rsp-relative)
 	frame      int
 	vecScratch int // rsp-relative offset of a 16-byte scratch for vector prints
 	consts     [][16]byte
@@ -209,10 +210,10 @@ func (x *x64) emitFunc(f *ir.Function) error {
 		x.line("\tmovq %s, %d(%%rsp)", scratch1, x.backup[r])
 	}
 
-	for _, b := range f.Blocks {
-		x.line("%s:", x.blockLabel(b.Label))
-		for _, inst := range b.Instrs {
-			if err := x.inst(inst); err != nil {
+	for bi := range f.Blocks {
+		x.line("%s:", x.blockLabel(f.Blocks[bi].Label))
+		for ii := range f.Blocks[bi].Instrs {
+			if err := x.inst(&f.Blocks[bi].Instrs[ii]); err != nil {
 				return err
 			}
 		}
@@ -286,11 +287,34 @@ func (x *x64) prepare(f *ir.Function) {
 			x.preserved = append(x.preserved, r)
 		}
 	}
+
+	// A stack arena reserves its capacity in the frame, plus an 8-byte cursor
+	// immediately below the buffer (at buffer-8) holding the bytes allocated so
+	// far. One region per creating instruction is enough: a create resets the
+	// cursor, so re-executing the site (say, in a loop) reuses the same buffer,
+	// and the verifier bounds the cursor by the capacity.
+	x.stackOff = map[*ir.Instruction]int{}
+	for bi := range f.Blocks {
+		for ii := range f.Blocks[bi].Instrs {
+			inst := &f.Blocks[bi].Instrs[ii]
+			if inst.Op != ir.OpArenaCreate || inst.Tier != ir.Stack {
+				continue
+			}
+			off = align16(off + 8) // room for the cursor cell at buffer-8
+			buf := off
+			x.stackOff[inst] = buf
+			off = buf + int(inst.Size)
+		}
+	}
+
 	x.frame = off
 	if x.frame%16 != 8 {
 		x.frame += 8
 	}
 }
+
+// align16 rounds v up to a multiple of 16.
+func align16(v int) int { return (v + 15) &^ 15 }
 
 // pushed reports whether r's physical home is one of the registers the prologue
 // pushes, so that a call already preserves it.
@@ -302,7 +326,7 @@ func (x *x64) pushed(r ir.Register) bool {
 	return false
 }
 
-func (x *x64) inst(inst ir.Instruction) error {
+func (x *x64) inst(inst *ir.Instruction) error {
 	switch inst.Op {
 	case ir.OpMov:
 		if inst.Src[0].Valid() {
@@ -313,6 +337,15 @@ func (x *x64) inst(inst ir.Instruction) error {
 		}
 
 	case ir.OpArenaCreate:
+		if inst.Tier == ir.Stack {
+			buf := x.stackOff[inst]
+			// The cursor lives at buffer-8 and starts at zero; the handle is the
+			// buffer's address in the frame.
+			x.line("\tmovq $0, %d(%%rsp)", buf-8)
+			x.line("\tleaq %d(%%rsp), %s", buf, scratch3)
+			x.store(scratch3, inst.Dst)
+			return nil
+		}
 		x.saveAll()
 		x.movImm(int64(inst.Tier), "%rdi")
 		x.movImm(inst.Size, "%rsi")
@@ -326,6 +359,21 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.store(scratch2, inst.Dst)
 
 	case ir.OpArenaAlloc:
+		if inst.Stack {
+			base := x.load(inst.Src[0], scratch1)
+			// addr = base + cursor; cursor += size. A stack arena is fixed and
+			// provably never overflows, so no bounds check is needed here.
+			x.line("\tmovq -8(%s), %s", base, scratch3)
+			x.line("\tleaq (%s,%s), %s", base, scratch3, scratch3)
+			if inst.Size >= math.MinInt32 && inst.Size <= math.MaxInt32 {
+				x.line("\taddq $%d, -8(%s)", inst.Size, base)
+			} else {
+				x.movImm(inst.Size, scratch2)
+				x.line("\taddq %s, -8(%s)", scratch2, base)
+			}
+			x.store(scratch3, inst.Dst)
+			return nil
+		}
 		x.saveAll()
 		x.line("\tmovq %s, %%rdi", x.load(inst.Src[0], scratch1))
 		x.movImm(inst.Size, "%rsi")
@@ -558,7 +606,7 @@ func (x *x64) memOperand(m ir.Mem) string {
 	return fmt.Sprintf("%d(%s)", m.Offset, base)
 }
 
-func (x *x64) rhsOperand(inst ir.Instruction) string {
+func (x *x64) rhsOperand(inst *ir.Instruction) string {
 	r, imm, isReg := inst.RHS()
 	if isReg {
 		return x.load(r, scratch2)

@@ -216,12 +216,15 @@ func (k ScalarKind) IsInt() bool { return !k.Float() }
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
 // to, which the callee's bounds checks rely on. An arena parameter is borrowed:
-// the callee may allocate from it but not release it.
+// the callee may allocate from it but not release it. A Stack arena parameter
+// is a stack arena borrowed from the caller: Size is the budget of bytes the
+// callee may still allocate from it.
 type Param struct {
 	Reg    Register
 	Kind   ValKind
 	Scalar ScalarKind // KindScalar: the integer/float type
-	Size   int64      // KindPtr: pointed-to region size in bytes
+	Size   int64      // KindPtr: pointed-to region size in bytes; KindArena: capacity or budget
+	Stack  bool       // KindArena: a stack-backed arena (borrowed from the caller)
 	Struct string     // KindPtr: ptr(Struct)
 	Elem   ScalarKind // KindPtr: ptr([Elem; Count])
 	Count  int64      // KindPtr: ptr([Elem; Count])
@@ -429,6 +432,7 @@ type Instruction struct {
 	Tier     TopologyTier
 	Size     int64
 	Growable bool       // OpArenaCreate: extensible arena; Size is the chunk size
+	Stack    bool       // OpArenaAlloc: the source arena is stack-backed (lowered inline, no runtime call)
 	Struct   string     // OpArenaAlloc: struct type name
 	Elem     ScalarKind // OpArenaAlloc: array element type (when Count > 0)
 	Count    int64      // OpArenaAlloc: array element count
@@ -760,6 +764,9 @@ func formatParamType(p Param) string {
 			return fmt.Sprintf("ptr(%d)", p.Size)
 		}
 	case KindArena:
+		if p.Stack {
+			return fmt.Sprintf("stack(%d)", p.Size)
+		}
 		if p.Size > 0 {
 			return fmt.Sprintf("arena(%d)", p.Size)
 		}

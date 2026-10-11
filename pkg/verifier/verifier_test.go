@@ -804,6 +804,227 @@ func TestVerifyGrowableArena(t *testing.T) {
 	}
 }
 
+func TestVerifyStackArena(t *testing.T) {
+	// A stack arena is fixed: cumulative allocation is proven, the allocation
+	// is annotated for inline lowering, and the arena is never destroyed.
+	valid := "func main -> i64\n" +
+		"    r1 = ARENA_CREATE STACK, 128\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    RET\n" +
+		"endfunc\n"
+	res, err := Verify(mustParse(t, valid))
+	if err != nil {
+		t.Fatalf("expected stack arena to verify, got %v", err)
+	}
+	allocs, destroys := 0, 0
+	for _, f := range res.Module.Funcs {
+		for _, b := range f.Blocks {
+			for _, in := range b.Instrs {
+				switch in.Op {
+				case ir.OpArenaAlloc:
+					allocs++
+					if !in.Stack {
+						t.Errorf("stack allocation not annotated: %s", in)
+					}
+				case ir.OpArenaDestroy:
+					destroys++
+				}
+			}
+		}
+	}
+	if allocs != 2 {
+		t.Fatalf("found %d allocations, want 2", allocs)
+	}
+	if destroys != 0 {
+		t.Fatalf("stack arena must not be destroyed, found %d ARENA_DESTROY", destroys)
+	}
+
+	// A pointer into a stack arena may be passed to a callee: the region (the
+	// frame) outlives the call.
+	ptrArg := "func main -> i64\n" +
+		"    r1 = ARENA_CREATE STACK, 64\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r1 = r2\n" +
+		"    CALL read\n" +
+		"    RET r0\n" +
+		"endfunc\n" +
+		"func read(r1: ptr([i64; 8])) -> i64\n" +
+		"    r0 = LOAD [r1]\n" +
+		"    RET r0\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, ptrArg)); err != nil {
+		t.Fatalf("expected pointer into a stack arena to be passable, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"growable stack is rejected",
+			"func main -> i64\n" +
+				"    r1 = ARENA_CREATE STACK, growable(64)\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"cannot be growable",
+		},
+		{
+			"capacity is enforced",
+			"func main -> i64\n" +
+				"    r1 = ARENA_CREATE STACK, 64\n" +
+				"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"arena exhausted",
+		},
+		{
+			"a stack arena cannot be passed",
+			"func main -> i64\n" +
+				"    r1 = ARENA_CREATE STACK, 64\n" +
+				"    CALL f\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func f(r1: arena) -> i64\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"cannot be passed",
+		},
+		{
+			"a stack pointer cannot be returned",
+			"func main -> i64\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func f(r1: arena) -> ptr([i64; 8])\n" +
+				"    r1 = ARENA_CREATE STACK, 64\n" +
+				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"    RET r0\n" +
+				"endfunc\n",
+			"does not outlive",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyStackParam(t *testing.T) {
+	// A callee with a stack(N) parameter borrows a budget of N bytes from the
+	// caller's frame and allocates inline (the allocation is annotated).
+	valid := "func main -> i64\n" +
+		"    s0 = ARENA_CREATE STACK, 64\n" +
+		"    r1 = s0\n" +
+		"    CALL fill\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func fill(r1: stack(64)) -> ptr([i64; 8])\n" +
+		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    RET r0\n" +
+		"endfunc\n"
+	res, err := Verify(mustParse(t, valid))
+	if err != nil {
+		t.Fatalf("expected stack parameter to verify, got %v", err)
+	}
+	annotated := false
+	for _, f := range res.Module.Funcs {
+		for _, b := range f.Blocks {
+			for _, in := range b.Instrs {
+				if in.Op == ir.OpArenaAlloc && in.Stack {
+					annotated = true
+				}
+			}
+		}
+	}
+	if !annotated {
+		t.Error("stack allocation in the callee was not annotated for inline lowering")
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			"budget larger than the arena",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE STACK, 32\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func fill(r1: stack(64)) -> i64\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"remaining capacity",
+		},
+		{
+			"repeated calls consume the budget",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE STACK, 16\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func fill(r1: stack(8)) -> i64\n" +
+				"    r0 = ARENA_ALLOC r1, [i64; 1]\n" +
+				"    RET r0\n" +
+				"endfunc\n",
+			"remaining capacity",
+		},
+		{
+			"a heap arena does not match a stack parameter",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func fill(r1: stack(64)) -> i64\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"expected a stack arena",
+		},
+		{
+			"a stack arena does not match a heap parameter",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE STACK, 64\n" +
+				"    r1 = s0\n" +
+				"    CALL fill\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func fill(r1: arena) -> i64\n" +
+				"    RET\n" +
+				"endfunc\n",
+			"cannot be passed to a heap",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q, got success", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyFloat(t *testing.T) {
 	valid := "func main -> i64\n" +
 		"    v1 = 2.5\n" +

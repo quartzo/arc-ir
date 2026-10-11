@@ -449,10 +449,11 @@ type typeSpec struct {
 	elem       ir.ScalarKind
 	count      int64
 	size       int64
+	stack      bool
 }
 
 // parseTypeSpec parses a type: a scalar kind (i8..u64, f32, f64, or the alias
-// "scalar"), "arena" / "arena(size)", or "ptr(Struct|[Elem; Count])".
+// "scalar"), "arena" / "arena(size)", "stack(size)", or "ptr(Struct|[Elem; Count])".
 func parseTypeSpec(c *cursor, lineNo int) (typeSpec, error) {
 	tok, err := c.next()
 	if err != nil {
@@ -476,6 +477,21 @@ func parseTypeSpec(c *cursor, lineNo int) (typeSpec, error) {
 			spec.size = sz
 		}
 		return spec, nil
+	case "stack":
+		if err := c.expect("("); err != nil {
+			return typeSpec{}, err
+		}
+		sz, err := parseImm(c, lineNo)
+		if err != nil {
+			return typeSpec{}, err
+		}
+		if err := c.expect(")"); err != nil {
+			return typeSpec{}, err
+		}
+		if sz <= 0 {
+			return typeSpec{}, fmt.Errorf("line %d: a stack arena needs a positive budget, got %d", lineNo, sz)
+		}
+		return typeSpec{kind: ir.KindArena, stack: true, size: sz}, nil
 	case "ptr":
 		structName, elem, count, size, err := parsePtrTarget(c, lineNo)
 		if err != nil {
@@ -769,6 +785,7 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 				Kind:   spec.kind,
 				Scalar: spec.scalar,
 				Size:   spec.size,
+				Stack:  spec.stack,
 				Struct: spec.structName,
 				Elem:   spec.elem,
 				Count:  spec.count,
