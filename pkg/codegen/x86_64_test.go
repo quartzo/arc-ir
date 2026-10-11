@@ -597,6 +597,27 @@ func TestCompileAndRun(t *testing.T) {
 	}
 }
 
+// TestEmitAsmLivenessSpill checks that a call spills only the registers live
+// across it, and that the prologue pushes only the callee-saved registers the
+// function writes. The loop uses only scratch registers, so no callee-saved
+// register other than rbp (the area base) is pushed, and the registers dead
+// across every call (r2, r3) are never spilled.
+func TestEmitAsmLivenessSpill(t *testing.T) {
+	asm := buildAsm(t, loopSrc)
+	for _, bad := range []string{"pushq %rbx", "pushq %r12", "pushq %r13", "pushq %r14", "pushq %r15"} {
+		if strings.Contains(asm, bad) {
+			t.Errorf("prologue pushes an unused callee-saved register (%q):\n%s", bad, asm)
+		}
+	}
+	// r2 is %rdx (area slot 16), r3 is %rsi (area slot 24); both are dead across
+	// every call, so neither is ever spilled.
+	for _, bad := range []string{"16(%rbp)", "24(%rbp)"} {
+		if strings.Contains(asm, bad) {
+			t.Errorf("a register dead across every call was spilled (%q):\n%s", bad, asm)
+		}
+	}
+}
+
 // ffiHelpers are C functions the extern tests link against, exercising integer,
 // six-argument, mixed integer/float and pointer (string) calls.
 const ffiHelpers = `

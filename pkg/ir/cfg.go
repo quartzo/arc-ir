@@ -293,3 +293,174 @@ func lineErr(line int, err error) error {
 	}
 	return err
 }
+
+// UseDef reports the registers an instruction reads (use) and writes (def).
+//
+// A call is modelled through its callee: the argument registers are read, and
+// every scratch and vector register is written, because a call clobbers the
+// volatile files (see the verifier). Preserved registers are not written — the
+// callee saves the ones it writes. The module is needed to resolve CALL targets.
+func (m *Module) UseDef(inst *Instruction) (use, def map[Register]bool) {
+	use, def = map[Register]bool{}, map[Register]bool{}
+	addUse := func(r Register) {
+		if r.Valid() {
+			use[r] = true
+		}
+	}
+	addDef := func(r Register) {
+		if r.Valid() {
+			def[r] = true
+		}
+	}
+
+	addUse(inst.Src[0])
+	addUse(inst.Src[1])
+
+	switch inst.Op {
+	case OpLabel, OpFunc:
+		// pseudo-instructions: no operands
+	case OpLoad:
+		addUse(inst.Mem.Base)
+		addUse(inst.Mem.Index)
+		addDef(inst.Dst)
+	case OpStore:
+		addUse(inst.Mem.Base)
+		addUse(inst.Mem.Index)
+	case OpCall:
+		callee := m.ByName[inst.Label]
+		if callee != nil {
+			for _, p := range callee.Params {
+				addUse(p.Reg)
+			}
+		}
+		for r := 0; r < NumScratch; r++ {
+			addDef(Register(r))
+		}
+		for r := NumGP; r < NumRegs; r++ {
+			addDef(Register(r))
+		}
+		switch {
+		case callee == nil:
+			addDef(0)
+		case callee.RetVoid:
+			// a void foreign call defines no result (scratch is clobbered above)
+		case callee.Extern && callee.RetKind == KindScalar && callee.RetScalar.Float():
+			addDef(Register(NumGP)) // float result in v0
+		default:
+			addDef(0) // result in r0
+		}
+	default:
+		if inst.Op.HasDest() {
+			addDef(inst.Dst)
+		}
+	}
+	return use, def
+}
+
+// LiveOut computes, for each instruction of f, the set of registers live
+// immediately after it. A register is live at a point when some path from that
+// point reads it before writing it. The backward dataflow runs to a fixpoint so
+// that values live across a back edge (a loop) are seen.
+//
+// The backend uses this to spill only the registers a call actually clobbers,
+// instead of every register the function happens to use.
+func (m *Module) LiveOut(f *Function) map[*Instruction]map[Register]bool {
+	nb := len(f.Blocks)
+
+	// Per-block use/def: a register is in the block's use set only if it is read
+	// before any write in the block.
+	useB := make([]map[Register]bool, nb)
+	defB := make([]map[Register]bool, nb)
+	for bi, b := range f.Blocks {
+		useB[bi], defB[bi] = map[Register]bool{}, map[Register]bool{}
+		for i := range b.Instrs {
+			u, d := m.UseDef(&b.Instrs[i])
+			for r := range u {
+				if !defB[bi][r] {
+					useB[bi][r] = true
+				}
+			}
+			for r := range d {
+				defB[bi][r] = true
+			}
+		}
+	}
+
+	liveIn := make([]map[Register]bool, nb)
+	liveOut := make([]map[Register]bool, nb)
+	for bi := range liveIn {
+		liveIn[bi] = map[Register]bool{}
+		liveOut[bi] = map[Register]bool{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for bi := nb - 1; bi >= 0; bi-- {
+			out := map[Register]bool{}
+			for _, s := range f.Succs[bi] {
+				for r := range liveIn[s] {
+					out[r] = true
+				}
+			}
+			in := map[Register]bool{}
+			for r := range useB[bi] {
+				in[r] = true
+			}
+			for r := range out {
+				if !defB[bi][r] {
+					in[r] = true
+				}
+			}
+			if !sameRegs(out, liveOut[bi]) {
+				liveOut[bi] = out
+				changed = true
+			}
+			if !sameRegs(in, liveIn[bi]) {
+				liveIn[bi] = in
+				changed = true
+			}
+		}
+	}
+
+	// Walk each block backward to turn the block-level sets into per-instruction
+	// live-out sets.
+	res := make(map[*Instruction]map[Register]bool)
+	for bi, b := range f.Blocks {
+		out := cloneRegs(liveOut[bi])
+		for i := len(b.Instrs) - 1; i >= 0; i-- {
+			inst := &b.Instrs[i]
+			res[inst] = out
+			u, d := m.UseDef(inst)
+			next := make(map[Register]bool, len(out)+len(u))
+			for r := range out {
+				if !d[r] {
+					next[r] = true
+				}
+			}
+			for r := range u {
+				next[r] = true
+			}
+			out = next
+		}
+	}
+	return res
+}
+
+func sameRegs(a, b map[Register]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for r := range a {
+		if !b[r] {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneRegs(a map[Register]bool) map[Register]bool {
+	c := make(map[Register]bool, len(a))
+	for r := range a {
+		c[r] = true
+	}
+	return c
+}

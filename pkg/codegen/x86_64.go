@@ -60,9 +60,10 @@ const (
 	areaSymbol = "arc_regsv"
 )
 
-// The prologue always pushes six callee-saved registers (rbp, rbx, r12-r15):
-// 48 bytes, a multiple of 16, so the frame size must be ≡ 8 (mod 16) to keep
-// rsp 16-byte aligned at a call.
+// The prologue pushes the callee-saved registers the function writes (rbp holds
+// the area base, so it is always among them). The push count and the frame size
+// are chosen together so that rsp is 16-byte aligned at a call: entry rsp ≡ 8
+// (mod 16), so (8*pushes + frame) ≡ 8 (mod 16).
 
 type x64 struct {
 	mod    *ir.Module
@@ -72,10 +73,12 @@ type x64 struct {
 	// per-function state
 	fn         *ir.Function
 	used       []ir.Register
-	preserved  []ir.Register           // written preserved regs backed up on the stack
-	slot       map[ir.Register]int     // vector slot (rsp-relative)
-	backup     map[ir.Register]int     // preserved backup slot (rsp-relative)
-	stackOff   map[*ir.Instruction]int // stack arena buffer offset (rsp-relative)
+	preserved  []ir.Register                            // written preserved regs backed up on the stack
+	slot       map[ir.Register]int                      // vector slot (rsp-relative)
+	backup     map[ir.Register]int                      // preserved backup slot (rsp-relative)
+	stackOff   map[*ir.Instruction]int                  // stack arena buffer offset (rsp-relative)
+	live       map[*ir.Instruction]map[ir.Register]bool // registers live after each instruction
+	pushRegs   []string                                 // callee-saved physical registers the prologue pushes
 	frame      int
 	vecScratch int // rsp-relative offset of a 16-byte scratch for vector prints
 	consts     [][16]byte
@@ -168,10 +171,19 @@ func (x *x64) funcRegs(f *ir.Function, fn func(ir.Register)) {
 				fn(inst.Mem.Index)
 			case ir.OpCall:
 				fn(0) // return value register
-				// A float-returning extern delivers its result in xmm0 (v0).
-				if callee := x.mod.ByName[inst.Label]; callee != nil && callee.Extern &&
-					callee.RetKind == ir.KindScalar && callee.RetScalar.Float() {
-					fn(ir.Register(ir.NumGP))
+				callee := x.mod.ByName[inst.Label]
+				if callee != nil {
+					// The argument registers carry the call's inputs. Include
+					// them so their homes and slots are allocated even when the
+					// caller never otherwise names them (e.g. passing a
+					// parameter straight through).
+					for _, p := range callee.Params {
+						fn(p.Reg)
+					}
+					// A float-returning extern delivers its result in xmm0 (v0).
+					if callee.Extern && callee.RetKind == ir.KindScalar && callee.RetScalar.Float() {
+						fn(ir.Register(ir.NumGP))
+					}
 				}
 			}
 		}
@@ -213,13 +225,11 @@ func (x *x64) emitFunc(f *ir.Function) error {
 	} else {
 		x.line("%s:", x.symbol[f.Name])
 	}
-	x.line("\tpushq %%rbp")
+	x.line("\tpushq %s", x.pushRegs[0])
 	x.line("\tleaq %s(%%rip), %%rbp", areaSymbol)
-	x.line("\tpushq %%rbx")
-	x.line("\tpushq %%r12")
-	x.line("\tpushq %%r13")
-	x.line("\tpushq %%r14")
-	x.line("\tpushq %%r15")
+	for _, p := range x.pushRegs[1:] {
+		x.line("\tpushq %s", p)
+	}
 	if x.frame > 0 {
 		x.line("\tsubq $%d, %%rsp", x.frame)
 	}
@@ -247,12 +257,9 @@ func (x *x64) emitFunc(f *ir.Function) error {
 		x.line("\tmovq %s, %s", scratch1, x.home(r))
 	}
 	x.line("\taddq $%d, %%rsp", x.frame)
-	x.line("\tpopq %%r15")
-	x.line("\tpopq %%r14")
-	x.line("\tpopq %%r13")
-	x.line("\tpopq %%r12")
-	x.line("\tpopq %%rbx")
-	x.line("\tpopq %%rbp")
+	for i := len(x.pushRegs) - 1; i >= 0; i-- {
+		x.line("\tpopq %s", x.pushRegs[i])
+	}
 	x.line("\tret")
 	return nil
 }
@@ -282,6 +289,26 @@ func (x *x64) prepare(f *ir.Function) {
 			}
 		}
 	}
+
+	// The prologue pushes only the callee-saved registers this function writes,
+	// plus rbp (the area base). Any other home of a written preserved register is
+	// backed up in the frame below.
+	pushedSet := map[string]bool{}
+	for _, r := range used {
+		if wrote[r] {
+			pushedSet[x.physOf[r]] = true
+		}
+	}
+	x.pushRegs = []string{areaBase}
+	for _, p := range []string{"%rbx", "%r12", "%r13", "%r14", "%r15"} {
+		if pushedSet[p] {
+			x.pushRegs = append(x.pushRegs, p)
+		}
+	}
+
+	// Liveness selects which registers a call must preserve: only those live
+	// across it are spilled, instead of every register the function uses.
+	x.live = x.mod.LiveOut(f)
 
 	// Stack slots live at non-negative offsets from rsp: a 16-byte scratch for
 	// vector prints, then a 16-byte slot per used vector register, then an
@@ -326,7 +353,7 @@ func (x *x64) prepare(f *ir.Function) {
 	}
 
 	x.frame = off
-	if x.frame%16 != 8 {
+	if (x.frame+8*len(x.pushRegs))%16 != 8 {
 		x.frame += 8
 	}
 }
@@ -337,9 +364,11 @@ func align16(v int) int { return (v + 15) &^ 15 }
 // pushed reports whether r's physical home is one of the registers the prologue
 // pushes, so that a call already preserves it.
 func (x *x64) pushed(r ir.Register) bool {
-	switch x.physOf[r] {
-	case "%rbx", "%r12", "%r13", "%r14", "%r15":
-		return true
+	phys := x.physOf[r]
+	for _, p := range x.pushRegs {
+		if p == phys {
+			return true
+		}
 	}
 	return false
 }
@@ -364,7 +393,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 			x.store(scratch3, inst.Dst)
 			return nil
 		}
-		x.saveAll()
+		x.saveForCall(inst)
 		x.movImm(int64(inst.Tier), "%rdi")
 		x.movImm(inst.Size, "%rsi")
 		fn := "arc_arena_create"
@@ -373,7 +402,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 		}
 		x.line("\tcall %s", fn)
 		x.line("\tmovq %%rax, %s", scratch2)
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 		x.store(scratch2, inst.Dst)
 
 	case ir.OpArenaAlloc:
@@ -392,29 +421,29 @@ func (x *x64) inst(inst *ir.Instruction) error {
 			x.store(scratch3, inst.Dst)
 			return nil
 		}
-		x.saveAll()
-		x.line("\tmovq %s, %%rdi", x.load(inst.Src[0], scratch1))
+		x.saveForCall(inst)
+		x.movTo(x.load(inst.Src[0], scratch1), "%rdi")
 		x.movImm(inst.Size, "%rsi")
 		x.line("\tcall arc_arena_alloc")
 		x.line("\tmovq %%rax, %s", scratch2)
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 		x.store(scratch2, inst.Dst)
 
 	case ir.OpArenaDestroy:
-		x.saveAll()
-		x.line("\tmovq %s, %%rdi", x.load(inst.Src[0], scratch1))
+		x.saveForCall(inst)
+		x.movTo(x.load(inst.Src[0], scratch1), "%rdi")
 		x.line("\tcall arc_arena_destroy")
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 
 	case ir.OpPrint:
-		x.saveAll()
-		x.line("\tmovq %s, %%rdi", x.load(inst.Src[0], scratch1))
+		x.saveForCall(inst)
+		x.movTo(x.load(inst.Src[0], scratch1), "%rdi")
 		x.line("\tcall arc_print")
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 
 	case ir.OpCall:
 		if callee := x.mod.ByName[inst.Label]; callee != nil && callee.Extern {
-			return x.emitExternCall(callee)
+			return x.emitExternCall(inst, callee)
 		}
 		x.line("\tcall %s", x.symbol[inst.Label])
 		x.line("\tmovq %%rax, %s", scratch2)
@@ -529,7 +558,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 		x.store(scratch3, inst.Dst)
 
 	case ir.OpPrintF:
-		x.saveAll()
+		x.saveForCall(inst)
 		src := x.loadF(inst.Src[0], xmmScratch1)
 		if inst.Width == 4 {
 			x.line("\tcvtss2sd %s, %%xmm0", src)
@@ -537,7 +566,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 			x.line("\tmovsd %s, %%xmm0", src)
 		}
 		x.line("\tcall arc_print_f64")
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 
 	case ir.OpIToF32:
 		src := x.load(inst.Src[0], scratch1)
@@ -567,7 +596,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 		x.store(xmmScratch1, inst.Dst)
 
 	case ir.OpPrintV:
-		x.saveAll()
+		x.saveForCall(inst)
 		src := x.loadF(inst.Src[0], xmmScratch1)
 		x.line("\tmovdqu %s, %d(%%rsp)", src, x.vecScratch)
 		n, step := 4, 4
@@ -592,7 +621,7 @@ func (x *x64) inst(inst *ir.Instruction) error {
 				x.line("\tcall arc_print")
 			}
 		}
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 
 	case ir.OpJmp:
 		x.line("\tjmp %s", x.blockLabel(inst.Label))
@@ -706,43 +735,103 @@ func (x *x64) movImmToDst(imm int64, dst ir.Register) {
 	x.store(scratch3, dst)
 }
 
-func (x *x64) saveAll() {
+// movTo moves src into dst, unless src already is dst.
+func (x *x64) movTo(src, dst string) {
+	if src != dst {
+		x.line("\tmovq %s, %s", src, dst)
+	}
+}
+
+// callClobbers reports whether a call may clobber r's home. A register resident
+// in the area or in a vector slot lives in this function's own frame, untouched
+// by a call. A callee-saved physical register is preserved by every call (an
+// ARC callee pushes it; a C callee must under the ABI). Everything else — the
+// scratch physical registers, %r9 and the XMM file — is caller-saved.
+func (x *x64) callClobbers(r ir.Register) bool {
+	phys := x.physOf[r]
+	if phys == "" {
+		return false
+	}
+	if r.IsVec() {
+		return true
+	}
+	switch phys {
+	case "%rbx", "%r12", "%r13", "%r14", "%r15":
+		return false
+	}
+	return true
+}
+
+// liveAcrossCall returns the registers that must survive the call at inst: the
+// registers live out of it that it clobbers and does not itself define.
+func (x *x64) liveAcrossCall(inst *ir.Instruction) []ir.Register {
+	live := x.live[inst]
+	_, def := x.mod.UseDef(inst)
+	var out []ir.Register
 	for _, r := range x.used {
-		phys := x.physOf[r]
-		if phys == "" {
-			continue
+		if live[r] && !def[r] && x.callClobbers(r) {
+			out = append(out, r)
 		}
-		if r.IsVec() {
-			x.line("\tmovdqu %s, %d(%%rsp)", phys, x.slot[r])
-		} else {
-			x.line("\tmovq %s, %d(%s)", phys, areaOff(r), areaBase)
+	}
+	return out
+}
+
+// saveForCall spills to canonical storage the registers the call at inst may
+// clobber: those live across it, plus any extra register whose value the call
+// reads but that may be dead afterwards (an extern call marshals its arguments
+// from canonical storage, not from the physical homes the ABI overwrites).
+func (x *x64) saveForCall(inst *ir.Instruction, extra ...ir.Register) {
+	saved := map[ir.Register]bool{}
+	for _, r := range x.liveAcrossCall(inst) {
+		x.spill(r)
+		saved[r] = true
+	}
+	for _, r := range extra {
+		if r.Valid() && x.callClobbers(r) && !saved[r] {
+			x.spill(r)
+			saved[r] = true
 		}
 	}
 }
 
-func (x *x64) restoreAll() {
-	for _, r := range x.used {
-		phys := x.physOf[r]
-		if phys == "" {
-			continue
-		}
-		if r.IsVec() {
-			x.line("\tmovdqu %d(%%rsp), %s", x.slot[r], phys)
-		} else {
-			x.line("\tmovq %d(%s), %s", areaOff(r), areaBase, phys)
-		}
+// restoreAfterCall reloads the registers saveForCall preserved.
+func (x *x64) restoreAfterCall(inst *ir.Instruction) {
+	for _, r := range x.liveAcrossCall(inst) {
+		x.reload(r)
+	}
+}
+
+// spill writes r's value to its canonical storage (its area slot or vector slot).
+func (x *x64) spill(r ir.Register) {
+	if r.IsVec() {
+		x.line("\tmovdqu %s, %d(%%rsp)", x.physOf[r], x.slot[r])
+	} else {
+		x.line("\tmovq %s, %d(%s)", x.physOf[r], areaOff(r), areaBase)
+	}
+}
+
+// reload reads r's value back from its canonical storage.
+func (x *x64) reload(r ir.Register) {
+	if r.IsVec() {
+		x.line("\tmovdqu %d(%%rsp), %s", x.slot[r], x.physOf[r])
+	} else {
+		x.line("\tmovq %d(%s), %s", areaOff(r), areaBase, x.physOf[r])
 	}
 }
 
 // emitExternCall lowers a call to a foreign (C) function through the System V
-// AMD64 ABI. It spills every physical register to its canonical storage
-// (saveAll), marshals the arguments into the ABI registers reading from that
-// storage — never from the physical homes, which overlap the ABI argument
-// registers — calls the symbol, and delivers the result to r0 (integer or
-// pointer) or v0 (float). saveAll/restoreAll is required because an ARC
-// preserved register may live in %r9, which the C ABI does not preserve.
-func (x *x64) emitExternCall(callee *ir.Function) error {
-	x.saveAll()
+// AMD64 ABI. It spills to canonical storage the registers live across the call
+// plus the argument registers, marshals the arguments from that storage — never
+// from the physical homes, which overlap the ABI argument registers — calls the
+// symbol, and delivers the result to r0 (integer or pointer) or v0 (float).
+// The spill is required because an ARC preserved register may live in %r9,
+// which the C ABI does not preserve.
+func (x *x64) emitExternCall(inst *ir.Instruction, callee *ir.Function) error {
+	args := make([]ir.Register, 0, len(callee.Params))
+	for _, p := range callee.Params {
+		args = append(args, p.Reg)
+	}
+	x.saveForCall(inst, args...)
 	gi, si := 0, 0
 	for _, p := range callee.Params {
 		if p.Kind == ir.KindScalar && p.Scalar.Float() {
@@ -766,19 +855,19 @@ func (x *x64) emitExternCall(callee *ir.Function) error {
 	x.line("\tcall %s", x.symbol[callee.Name])
 	switch {
 	case callee.RetVoid:
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 	case callee.RetKind == ir.KindScalar && callee.RetScalar.Float():
-		// Capture xmm0 before restoreAll reloads the vector homes.
+		// Capture xmm0 before restoreAfterCall reloads the vector homes.
 		mnem := "movsd"
 		if callee.RetScalar == ir.F32 {
 			mnem = "movss"
 		}
 		x.line("\t%s %%xmm0, %s", mnem, xmmScratch1)
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 		x.store(xmmScratch1, ir.Register(ir.NumGP)) // result in v0
 	default:
 		x.line("\tmovq %%rax, %s", scratch2)
-		x.restoreAll()
+		x.restoreAfterCall(inst)
 		x.store(scratch2, 0) // result in r0
 	}
 	return nil
