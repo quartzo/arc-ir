@@ -29,7 +29,7 @@ import (
 	"text/scanner"
 	"unicode"
 
-	"arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/ir"
 )
 
 // blockKind identifies the block a line belongs to.

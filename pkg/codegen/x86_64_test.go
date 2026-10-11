@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"arc-ir/pkg/parser"
-	"arc-ir/pkg/runtime"
-	"arc-ir/pkg/verifier"
+	"github.com/quartzo/arc-ir/pkg/parser"
+	"github.com/quartzo/arc-ir/pkg/runtime"
+	"github.com/quartzo/arc-ir/pkg/verifier"
 )
 
 func buildAsm(t *testing.T, src string) string {

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"arc-ir/pkg/ir"
-	"arc-ir/pkg/parser"
+	"github.com/quartzo/arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/parser"
 )
 
 func mustParse(t *testing.T, src string) *ir.Program {

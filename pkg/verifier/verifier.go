@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"math"
 
-	"arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/ir"
 )
 
 // errArenaMerge reports a join that would merge two different arena handles

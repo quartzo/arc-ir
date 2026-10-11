@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/ir"
 )
 
 const loopSrc = `

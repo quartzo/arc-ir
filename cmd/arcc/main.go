@@ -20,11 +20,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"arc-ir/pkg/codegen"
-	"arc-ir/pkg/ir"
-	"arc-ir/pkg/parser"
-	"arc-ir/pkg/runtime"
-	"arc-ir/pkg/verifier"
+	"github.com/quartzo/arc-ir/pkg/codegen"
+	"github.com/quartzo/arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/parser"
+	"github.com/quartzo/arc-ir/pkg/runtime"
+	"github.com/quartzo/arc-ir/pkg/verifier"
 )
 
 const version = "0.2.0"

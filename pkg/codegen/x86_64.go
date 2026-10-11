@@ -21,8 +21,8 @@ import (
 	"strings"
 	"unicode"
 
-	"arc-ir/pkg/ir"
-	"arc-ir/pkg/runtime"
+	"github.com/quartzo/arc-ir/pkg/ir"
+	"github.com/quartzo/arc-ir/pkg/runtime"
 )
 
 // physical registers handed out to each block. Scratch is volatile, so it gets

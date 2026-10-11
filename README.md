@@ -1,5 +1,8 @@
 # arc-ir
 
+[![CI](https://github.com/quartzo/arc-ir/actions/workflows/ci.yml/badge.svg)](https://github.com/quartzo/arc-ir/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Arena Register Code** — a small, statically verified, flat-register
 intermediate representation that compiles straight to x86_64 assembly.
 
@@ -58,7 +61,7 @@ verification and code generation stay simple and direct.
 ## Layout
 
 ```
-arc-compiler/
+arc-ir/
 ├── cmd/arcc/            # CLI driver (parse → verify → asm → assemble → run)
 ├── pkg/ir/              # registers, instructions, memory operands, CFG
 ├── pkg/parser/          # lexer/parser for the .arc syntax (text/scanner)
