@@ -261,8 +261,11 @@ The calling convention is:
 
 - Arguments are passed in `r1`–`r4`.
 - The return value is passed in `r0`.
-- All other registers are preserved across a call; a call is transparent to
-  the caller except for `r0`.
+- Every other register is preserved across a call, unless the callee **declares
+  it clobbered**: `func f(...) clobbers r5, r6:`. The verifier marks those
+  registers destroyed at the call site, and rejects using one afterwards. The
+  backend saves and restores, in the callee, the registers a function writes
+  that it does not declare as clobbers.
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 

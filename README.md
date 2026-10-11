@@ -50,6 +50,7 @@ verification and code generation stay simple and direct.
 | — | Struct layout: natural alignment, `packed struct`, per-field `align N` | ✅ |
 | — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
 | — | Enums: tagged unions (`VARIANT`/`JV`) with active-variant tag refinement | ✅ |
+| — | Register clobbers: `func f(...) clobbers rN:`; registers preserved unless declared | ✅ |
 
 ## Layout
 

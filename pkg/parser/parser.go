@@ -678,6 +678,23 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 		inst.RetSize = spec.size
 	}
 
+	// Optional clobber list: "clobbers rA, rB".
+	if c.peek() == "clobbers" {
+		c.pos++
+		for {
+			r, err := c.reg(lineNo)
+			if err != nil {
+				return ir.Instruction{}, err
+			}
+			inst.Clobbers = append(inst.Clobbers, r)
+			if c.peek() == "," {
+				c.pos++
+				continue
+			}
+			break
+		}
+	}
+
 	if err := c.expect(":"); err != nil {
 		return ir.Instruction{}, err
 	}
