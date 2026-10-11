@@ -82,6 +82,26 @@ func TestEmitAsmRegisterMapping(t *testing.T) {
 	}
 }
 
+// TestInlineNotAppliedWithPreserved checks that a callee which uses a preserved
+// register is left as a real call: inlining it would clobber the caller's
+// preserved values.
+func TestInlineNotAppliedWithPreserved(t *testing.T) {
+	asm := buildAsm(t, "inline func f(r1: i64) -> i64\n"+
+		"    s0 = ADD r1, 1\n"+
+		"    r0 = s0\n"+
+		"    RET r0\n"+
+		"endfunc\n"+
+		"func main\n"+
+		"    r1 = 5\n"+
+		"    CALL f\n"+
+		"    PRINT r0\n"+
+		"    RET r0\n"+
+		"endfunc\n")
+	if !strings.Contains(asm, "call .Lfunc_f") {
+		t.Errorf("expected a real call to f, got:\n%s", asm)
+	}
+}
+
 // TestEmitAsmArea checks that a module using more general-purpose registers than
 // there are physical ones spills the rest to the register area, addressed
 // through the reserved base register.
@@ -239,6 +259,24 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r3\n" +
 			"    RET r3\n" +
 			"endfunc\n", "42"},
+		{"inline", "inline func add1(r1: i64) -> i64\n" +
+			"    r2 = ADD r1, 1\n" +
+			"    r0 = r2\n" +
+			"    RET r0\n" +
+			"endfunc\n" +
+			"func main\n" +
+			"    s0 = 0\n" +
+			"    r0 = 0\n" +
+			"loop:\n" +
+			"    JGE s0, 5, done\n" +
+			"    r1 = s0\n" +
+			"    CALL add1\n" +
+			"    s0 = ADD s0, 1\n" +
+			"    JMP loop\n" +
+			"done:\n" +
+			"    PRINT r0\n" +
+			"    RET r0\n" +
+			"endfunc\n", "5"},
 		{"float", "func main\n" +
 			"    v1 = 2.5\n" +
 			"    v2 = 4.0\n" +

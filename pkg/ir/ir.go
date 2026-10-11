@@ -452,6 +452,10 @@ type Instruction struct {
 	RetElem   ScalarKind
 	RetCount  int64
 
+	// Inline marks a function (OpFunc only) that the backend should inline at
+	// every call site.
+	Inline bool
+
 	// Line is the 1-based source line, attached by the parser.
 	Line int
 }

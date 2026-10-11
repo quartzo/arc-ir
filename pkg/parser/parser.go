@@ -151,6 +151,17 @@ func Parse(src string) (*ir.Program, error) {
 				}
 				prog.Instrs = append(prog.Instrs, inst)
 				state, openLine = blockFunc, lineNo
+			case head == "inline":
+				if len(toks) < 2 || toks[1] != "func" {
+					return nil, fmt.Errorf("line %d: expected `inline func`", lineNo)
+				}
+				inst, err := parseFunc(toks[1:], lineNo)
+				if err != nil {
+					return nil, err
+				}
+				inst.Inline = true
+				prog.Instrs = append(prog.Instrs, inst)
+				state, openLine = blockFunc, lineNo
 			default:
 				inst, err := parseLine(toks, lineNo)
 				if err != nil {

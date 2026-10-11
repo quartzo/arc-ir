@@ -334,6 +334,9 @@ func Verify(prog *ir.Program) (*Result, error) {
 		res.Blocks += len(f.Blocks)
 		v.insertAutoFree()
 	}
+	if err := ir.Inline(m); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 

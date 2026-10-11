@@ -26,6 +26,7 @@ type Function struct {
 	Succs     [][]int
 	Preds     [][]int
 	IsEntry   bool
+	Inline    bool // the backend inlines every call to this function
 
 	instrs []Instruction
 }
@@ -56,7 +57,7 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, instrs: r.instrs}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, Inline: r.inline, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -103,6 +104,7 @@ type rawFunc struct {
 	retStruct string
 	retElem   ScalarKind
 	retCount  int64
+	inline    bool
 	instrs    []Instruction
 }
 
@@ -122,6 +124,7 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 				retStruct: inst.RetStruct,
 				retElem:   inst.RetElem,
 				retCount:  inst.RetCount,
+				inline:    inst.Inline,
 			})
 			cur = len(funcs) - 1
 			continue

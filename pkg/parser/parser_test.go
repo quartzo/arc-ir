@@ -152,6 +152,24 @@ func TestParseReturnType(t *testing.T) {
 	}
 }
 
+func TestParseInline(t *testing.T) {
+	prog, err := Parse("inline func f(r1: i64)\n" +
+		"    RET r1\n" +
+		"endfunc\n" +
+		"func main\n" +
+		"    RET\n" +
+		"endfunc\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if f := prog.Instrs[0]; f.Op != ir.OpFunc || !f.Inline {
+		t.Errorf("inline func parsed as %+v", f)
+	}
+	if m := prog.Instrs[2]; m.Op != ir.OpFunc || m.Inline {
+		t.Errorf("plain func parsed as %+v", m)
+	}
+}
+
 func TestParseArenaParam(t *testing.T) {
 	prog, err := Parse("func f(r1: arena, r2: ptr([i64; 8]))\n" +
 		"    RET\n" +

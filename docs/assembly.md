@@ -259,6 +259,15 @@ func add(r1: i64, r2: i64)
 endfunc
 ```
 
+A function may be marked `inline func`: the backend then expands every call to it
+in place, removing the `CALL`/`RET` overhead. Inlining is applied when the callee
+uses no preserved registers (`s*`) — scratch and vector registers are volatile
+across a call, so the caller holds no live value in them and the callee may
+clobber them freely. A callee that uses a preserved register, or is recursive, is
+left as a real call. A function marked inline is a good way to delegate a loop
+body to a function (which gives its region a function scope) without paying for a
+call per iteration.
+
 The calling convention is:
 
 - Arguments are passed in `r1`–`r4`.
@@ -349,7 +358,7 @@ never outlive the region it points into.
 ```
 program    := { top }
 top        := function | structdef | enumdef
-function   := "func" ident [ "(" params ")" ] [ "->" type ] { instruction } "endfunc"
+function   := [ "inline" ] "func" ident [ "(" params ")" ] [ "->" type ] { instruction } "endfunc"
 structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
 enumdef    := "enum" ident { variant } "endenum"
 field      := ident ":" type

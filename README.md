@@ -52,6 +52,7 @@ verification and code generation stay simple and direct.
 | — | Enums: tagged unions (`VARIANT`/`JV`) with active-variant tag refinement | ✅ |
 | — | Register blocks: scratch `r0..r31` (volatile) and preserved `s0..s31` (callee-saved) | ✅ |
 | — | Physical/area mapping: physical registers + fixed area via a reserved base register | ✅ |
+| — | Inlining: `inline func` expanded at each call site (no preserved registers, non-recursive) | ✅ |
 
 ## Layout
 
@@ -177,6 +178,11 @@ A function may also declare a return type with `->` (`ptr(...)`; the default is
 `i64`). The verifier checks the value returned at each `RET` against that type
 and gives the caller's `r0` the declared type. An `arena` cannot be returned: a
 region lives only as long as the function that creates it.
+
+A function marked `inline func` is expanded at each call site by the backend,
+when it uses no preserved registers, so a loop body can be delegated to a
+function — gaining a region scope — without paying for a call per iteration
+(`examples/inline.arc`).
 
 ## Regions and lifetime
 
