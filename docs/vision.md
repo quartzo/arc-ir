@@ -110,6 +110,7 @@ types, call-depth limits (deliberately declined).
 
 1. **Harden the contract**: fuzz/property tests that try to break soundness.
 2. State pruning, for scalability.
-3. Path-sensitive ownership merge (fewer conservative rejections).
+3. Path-sensitive provenance merge: the join keeps a *set* of possible arenas
+   instead of collapsing to "unknown" (fewer conservative rejections).
 4. Typed cells across function boundaries (typed `ptr` parameters).
 5. Real CXL/persistent-memory arenas via `mmap` in the runtime.

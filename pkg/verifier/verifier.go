@@ -5,10 +5,8 @@
 //
 //   - the value type (uninitialized, scalar, arena handle, data pointer),
 //   - for scalars, a signed value range [Min, Max],
-//   - for arena handles and data pointers, the owning arena, allocation size
-//     and allocation identity,
-//   - whether the owning arena has been destroyed, and whether this function
-//     owns the reference (see the ownership rules below).
+//   - for arena handles and data pointers, the arena reference identity,
+//     allocation size and allocation identity,
 //
 // It also tracks the type of memory cells written through static offsets, so
 // that a stored pointer survives a STORE/LOAD round-trip.
@@ -19,9 +17,9 @@
 // r3 < 10). This lets the verifier prove that a dynamic access such as
 // [r2 + r3*8] stays inside its allocation.
 //
-// Rejected programs include: out-of-bounds accesses, use-after-destroy,
-// use of an uninitialized register, type misuse, arena leaks, destroying a
-// borrowed arena, and any access whose bounds cannot be proven.
+// Rejected programs include: out-of-bounds accesses, use of an uninitialized
+// or call-destroyed register, type misuse, a region that escapes its creating
+// function, and any access whose bounds cannot be proven.
 package verifier
 
 import (
@@ -1607,7 +1605,9 @@ func stateEqual(a, b State) bool {
 }
 
 // mergeStates joins two states at a control-flow join. A register or cell is
-// kept only if it is defined on both incoming edges.
+// kept only if it is defined on both incoming edges. Provenance is merged per
+// axis, so a pointer keeps its arena identity when both paths agree on it even
+// if they differ in allocation identity.
 func mergeStates(a, b State) State {
 	var m State
 	for r := 0; r < ir.NumRegs; r++ {
@@ -1630,10 +1630,15 @@ func mergeStates(a, b State) State {
 		if ra.Variant != rb.Variant {
 			ra.Variant = -1
 		}
-		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
-			// Different arenas/allocations on the two paths: provenance is
-			// unknown.
+		// Provenance is merged per axis. The arena identity survives the join
+		// when both paths agree on it; only the allocation identity is dropped
+		// when they differ. Decoupling the two means a pointer that selects
+		// among allocations of the same arena keeps a known arena, so it stays
+		// returnable/storable and its bounds stay precise.
+		if ra.RefID != rb.RefID {
 			ra.RefID = -1
+		}
+		if ra.AllocID != rb.AllocID {
 			ra.AllocID = -1
 		}
 		m.Regs[r] = ra
@@ -1677,8 +1682,10 @@ func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
 			continue
 		}
 		va.AllocSize = minAlloc(va.AllocSize, vb.AllocSize)
-		if va.RefID != vb.RefID || va.AllocID != vb.AllocID {
+		if va.RefID != vb.RefID {
 			va.RefID = -1
+		}
+		if va.AllocID != vb.AllocID {
 			va.AllocID = -1
 		}
 		out[k] = va

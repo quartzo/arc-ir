@@ -51,8 +51,8 @@ contract; completeness is best-effort.
 
 The verifier is an abstract interpreter over the control-flow graph. Per
 program point it tracks, for each register, an abstract value: an integer (with
-a signed range and width), arena handle (with reference identity, capacity and
-ownership), or data pointer (with arena, allocation identity and size). It also
+a signed range and width), arena handle (with reference identity and capacity),
+or data pointer (with arena, allocation identity and size). It also
 tracks the type of statically-addressed memory cells and the bytes allocated so
 far from each arena. States flow along edges and merge at joins (a conservative
 union). Conditional jumps refine integer ranges on each edge. A region is

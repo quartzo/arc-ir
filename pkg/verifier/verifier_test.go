@@ -344,6 +344,31 @@ func TestVerifyNonScalarReturns(t *testing.T) {
 	}
 }
 
+func TestVerifyPathSensitiveProvenance(t *testing.T) {
+	// Two paths allocate from the same caller-owned arena and their pointers
+	// merge at a join. The arena identity survives the join, so the pointer is
+	// still returnable; only the allocation identity is dropped.
+	src := "func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 128\n" +
+		"    r1 = s0\n" +
+		"    CALL pick\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func pick(r1: arena) -> ptr([i64; 8])\n" +
+		"    r3 = 0\n" +
+		"    JEQ r3, 0, b\n" +
+		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    JMP done\n" +
+		"b:\n" +
+		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"done:\n" +
+		"    RET r0\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, src)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
 func TestVerifyReturnRejections(t *testing.T) {
 	cases := []struct {
 		name string
@@ -399,6 +424,31 @@ func TestVerifyReturnRejections(t *testing.T) {
 				"func f() -> ptr([i64; 8])\n" +
 				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"    RET r0\n" +
+				"endfunc\n",
+			"does not outlive the function",
+		},
+		{
+			// Conservative limitation: when the two paths point into *different*
+			// caller-owned arenas the merge gives unknown provenance, so the
+			// pointer is rejected. A provenance set (not a single arena id)
+			// would accept it; see the roadmap.
+			"merged pointer from two borrowed arenas",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+				"    r1 = s0\n" +
+				"    r2 = s0\n" +
+				"    CALL pick\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func pick(r1: arena, r2: arena) -> ptr([i64; 8])\n" +
+				"    r3 = 0\n" +
+				"    JEQ r3, 0, b\n" +
+				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"    JMP done\n" +
+				"b:\n" +
+				"    r0 = ARENA_ALLOC r2, [i64; 8]\n" +
+				"done:\n" +
 				"    RET r0\n" +
 				"endfunc\n",
 			"does not outlive the function",

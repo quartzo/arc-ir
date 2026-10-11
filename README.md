@@ -410,6 +410,8 @@ With a working verifier, the LLM becomes the primary generation tool:
 
 ## Next Steps
 
-- Path-sensitive merge of ownership (fewer conservative rejections).
+- Path-sensitive provenance merge: a pointer merged from several paths keeps the
+  set of arenas it may point into, instead of "unknown" (fewer conservative
+  rejections).
 - Real CXL/persistent-memory arenas via `mmap` in the runtime.
 - Register-pressure-aware allocation and peephole optimization.
