@@ -7,7 +7,8 @@ The general-purpose register file has two blocks:
 | scratch   | `r0`..`r31`   | volatile across a call   |
 | preserved | `s0`..`s31`   | callee-saved             |
 
-The vector file is unchanged (`v0`..`v15`, the x64 line).
+The vector file is `v0`..`v15` (the x64 line). It is **volatile**: like scratch,
+any call destroys every vector register.
 
 ## Scratch
 

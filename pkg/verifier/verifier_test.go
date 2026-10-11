@@ -1010,6 +1010,13 @@ func TestVerifyBlocks(t *testing.T) {
 	if _, err := Verify(mustParse(t, vol)); err == nil || !strings.Contains(err.Error(), "destroyed register") {
 		t.Fatalf("expected a destroyed-register error for volatile scratch, got %v", err)
 	}
+
+	// The vector file is volatile too: a call destroys every vector register.
+	vec := "func main:\n    v1 = 2.5\n    CALL leaf\n    PRINTF v1\n    RET\n" +
+		"func leaf:\n    v1 = 1.0\n    RET\n"
+	if _, err := Verify(mustParse(t, vec)); err == nil || !strings.Contains(err.Error(), "destroyed register") {
+		t.Fatalf("expected a destroyed-register error for volatile vectors, got %v", err)
+	}
 }
 
 func TestVerifyErrorLine(t *testing.T) {

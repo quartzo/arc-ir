@@ -71,7 +71,8 @@ arc-compiler/
 ## The register file
 
 The general-purpose file has two blocks: **scratch** `r0..r31` (volatile across
-a call) and **preserved** `s0..s31` (callee-saved). The vector file is `v0..v15`.
+a call) and **preserved** `s0..s31` (callee-saved). The vector file is `v0..v15`,
+also volatile across a call.
 Registers are plain 64-bit machine registers with no types of their own — the
 verifier tracks their abstract type per program point. A value that must survive
 a call lives in a preserved register. See [`docs/registers.md`](docs/registers.md).

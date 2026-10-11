@@ -909,12 +909,16 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				}
 			}
 		}
-		// A call destroys every scratch register: scratch is volatile. The
-		// preserved registers survive (the callee saves the ones it writes).
+		// A call destroys every scratch register: scratch is volatile. Vector
+		// registers are volatile too. The preserved registers survive (the callee
+		// saves the ones it writes).
 		for r := 0; r < ir.NumScratch; r++ {
 			if ir.Register(r) != 0 {
 				st.Regs[r] = RegState{Clobbered: true}
 			}
+		}
+		for r := ir.NumGP; r < ir.NumRegs; r++ {
+			st.Regs[r] = RegState{Clobbered: true}
 		}
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {

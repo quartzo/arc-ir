@@ -265,9 +265,10 @@ The calling convention is:
 - The return value is passed in `r0`.
 - The file has two blocks (see [`registers.md`](registers.md)): **scratch**
   (`r0`..`r31`) is volatile — any call destroys the whole scratch block — and
-  **preserved** (`s0`..`s31`) is callee-saved. A value that must survive a call
-  lives in a preserved register; the backend saves the preserved registers the
-  callee uses.
+  **preserved** (`s0`..`s31`) is callee-saved. The **vector file** (`v0`..`v15`)
+  is volatile too: any call destroys every vector register. A value that must
+  survive a call lives in a preserved register; the backend saves the preserved
+  registers the callee uses.
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 
