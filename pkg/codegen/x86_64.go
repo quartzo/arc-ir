@@ -1,15 +1,17 @@
 // Package codegen lowers verified ARC assembly to x86_64 GNU assembly.
 //
-// ARC's flat register file maps almost directly onto the machine. The backend
-// assigns each ARC register used anywhere in the module to a physical register
-// (preferring callee-saved ones) and spills the remainder to stack slots. The
-// mapping is global, so argument registers (r0..r4) hold the same physical
-// register in caller and callee.
+// ARC's flat register file maps onto a small set of physical registers plus a
+// fixed per-thread memory area. The backend assigns each ARC register used
+// anywhere in the module either a physical register or an area slot; the
+// mapping is global, so argument registers (r0..r4) hold the same home in
+// caller and callee. The area is addressed through a reserved base register
+// (%rbp), so the same logical register is reached the same way everywhere.
 //
-// Each ARC function becomes a separate assembly function with its own frame.
-// Around a call every ARC register is saved to its stack slot and restored
-// afterwards, so a call is transparent to the caller except for the return
-// value in r0.
+// Scratch is volatile and gets caller-saved physical registers: a call may
+// clobber them. Preserved is callee-saved and gets callee-saved physical
+// registers (plus a few extra registers, whose area/register home the callee
+// backs up on the stack if it writes them). Vector registers spill to the
+// stack.
 package codegen
 
 import (
@@ -23,12 +25,13 @@ import (
 	"arc-ir/pkg/runtime"
 )
 
-// physical registers handed out to ARC registers, callee-saved first. %rsp is
-// reserved; %r10, %r11 and %rax are reserved as scratch.
-var arcPhysRegs = []string{
-	"%rbx", "%r12", "%r13", "%r14", "%r15",
-	"%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9",
-}
+// physical registers handed out to each block. Scratch is volatile, so it gets
+// caller-saved registers (nothing has to survive a call); preserved gets the
+// callee-saved ones. Registers with no physical home live in the area.
+var (
+	arcScratchPhys   = []string{"%rcx", "%rdx", "%rsi", "%rdi", "%r8"}
+	arcPreservedPhys = []string{"%rbx", "%r12", "%r13", "%r14", "%r15", "%r9"}
+)
 
 // vector registers handed out to ARC vector registers; %xmm14 and %xmm15 are
 // reserved as scratch.
@@ -43,16 +46,16 @@ const (
 	scratch3    = "%rax"
 	xmmScratch1 = "%xmm14"
 	xmmScratch2 = "%xmm15"
+
+	// areaBase is the reserved register that holds the address of the fixed
+	// register area; areaSymbol is the area itself (a static region).
+	areaBase   = "%rbp"
+	areaSymbol = "arc_regsv"
 )
 
-// calleeSavedBytes is the number of bytes the prologue pushes for the
-// callee-saved registers (rbx, r12-r15). Stack slots start below them.
-const calleeSavedBytes = 5 * 8
-
-type loc struct {
-	reg string // non-empty when resident in a register
-	off int    // rbp-relative offset when spilled
-}
+// The prologue always pushes six callee-saved registers (rbp, rbx, r12-r15):
+// 48 bytes, a multiple of 16, so the frame size must be ≡ 8 (mod 16) to keep
+// rsp 16-byte aligned at a call.
 
 type x64 struct {
 	mod    *ir.Module
@@ -62,10 +65,11 @@ type x64 struct {
 	// per-function state
 	fn         *ir.Function
 	used       []ir.Register
-	preserved  []ir.Register
-	slot       map[ir.Register]int
+	preserved  []ir.Register       // written preserved regs backed up on the stack
+	slot       map[ir.Register]int // vector slot (rsp-relative)
+	backup     map[ir.Register]int // preserved backup slot (rsp-relative)
 	frame      int
-	vecScratch int // rbp-relative offset of a 16-byte scratch for vector prints
+	vecScratch int // rsp-relative offset of a 16-byte scratch for vector prints
 	consts     [][16]byte
 
 	b strings.Builder
@@ -100,9 +104,24 @@ func (x *x64) assignGlobals() {
 	}
 	sort.Slice(gp, func(i, j int) bool { return gp[i] < gp[j] })
 	sort.Slice(vec, func(i, j int) bool { return vec[i] < vec[j] })
-	for i, r := range gp {
-		if i < len(arcPhysRegs) {
-			x.physOf[r] = arcPhysRegs[i]
+	// Each block gets its physical registers first (in order); the rest live in
+	// the register area (addressed through areaBase).
+	var scratch, preserved []ir.Register
+	for _, r := range gp {
+		if r.IsScratch() {
+			scratch = append(scratch, r)
+		} else {
+			preserved = append(preserved, r)
+		}
+	}
+	for i, r := range scratch {
+		if i < len(arcScratchPhys) {
+			x.physOf[r] = arcScratchPhys[i]
+		}
+	}
+	for i, r := range preserved {
+		if i < len(arcPreservedPhys) {
+			x.physOf[r] = arcPreservedPhys[i]
 		}
 	}
 	for i, r := range vec {
@@ -151,8 +170,18 @@ func (x *x64) emit() (string, error) {
 		}
 	}
 	x.emitRodata()
+	x.emitArea()
 	x.line(".section .note.GNU-stack,\"\",@progbits")
 	return x.b.String(), nil
+}
+
+// emitArea declares the fixed register area: one 8-byte slot per general-purpose
+// register, used as the home of any register that has no physical one.
+func (x *x64) emitArea() {
+	x.line(".bss")
+	x.line(".align 16")
+	x.line("%s:", areaSymbol)
+	x.line("\t.zero %d", ir.NumGP*8)
 }
 
 func (x *x64) emitFunc(f *ir.Function) error {
@@ -166,7 +195,7 @@ func (x *x64) emitFunc(f *ir.Function) error {
 		x.line("%s:", x.symbol[f.Name])
 	}
 	x.line("\tpushq %%rbp")
-	x.line("\tmovq %%rsp, %%rbp")
+	x.line("\tleaq %s(%%rip), %%rbp", areaSymbol)
 	x.line("\tpushq %%rbx")
 	x.line("\tpushq %%r12")
 	x.line("\tpushq %%r13")
@@ -176,7 +205,8 @@ func (x *x64) emitFunc(f *ir.Function) error {
 		x.line("\tsubq $%d, %%rsp", x.frame)
 	}
 	for _, r := range x.preserved {
-		x.line("\tmovq %s, %d(%%rbp)", x.physOf[r], x.slot[r])
+		x.line("\tmovq %s, %s", x.home(r), scratch1)
+		x.line("\tmovq %s, %d(%%rsp)", scratch1, x.backup[r])
 	}
 
 	for _, b := range f.Blocks {
@@ -192,7 +222,8 @@ func (x *x64) emitFunc(f *ir.Function) error {
 	x.line("%s:", x.epilogueLabel())
 	for i := len(x.preserved) - 1; i >= 0; i-- {
 		r := x.preserved[i]
-		x.line("\tmovq %d(%%rbp), %s", x.slot[r], x.physOf[r])
+		x.line("\tmovq %d(%%rsp), %s", x.backup[r], scratch1)
+		x.line("\tmovq %s, %s", scratch1, x.home(r))
 	}
 	x.line("\taddq $%d, %%rsp", x.frame)
 	x.line("\tpopq %%r15")
@@ -218,9 +249,10 @@ func (x *x64) prepare(f *ir.Function) {
 	sort.Slice(used, func(i, j int) bool { return used[i] < used[j] })
 	x.used = used
 
-	// Preserved registers this function writes must survive a call: save their
-	// physical home at entry and restore it at exit. Scratch registers are
-	// volatile and are not saved.
+	// Preserved registers this function writes must survive a call. One whose
+	// home is a pushed callee-saved register is already covered; any other home
+	// (a caller-saved register or the area) is backed up on the stack here.
+	// Scratch is volatile and is never saved.
 	wrote := map[ir.Register]bool{}
 	for _, b := range f.Blocks {
 		for _, inst := range b.Instrs {
@@ -229,30 +261,43 @@ func (x *x64) prepare(f *ir.Function) {
 			}
 		}
 	}
+
+	// Stack slots live at non-negative offsets from rsp: a 16-byte scratch for
+	// vector prints, then a 16-byte slot per used vector register, then an
+	// 8-byte backup per preserved register above.
+	x.slot = map[ir.Register]int{}
+	x.backup = map[ir.Register]int{}
+	off := 0
+	x.vecScratch = off
+	off += 16
+	for _, r := range used {
+		if r.IsVec() {
+			x.slot[r] = off
+			off += 16
+		}
+	}
 	x.preserved = nil
 	for _, r := range used {
-		if r.IsPreserved() && wrote[r] && x.physOf[r] != "" {
+		if r.IsPreserved() && wrote[r] && !x.pushed(r) {
+			x.backup[r] = off
+			off += 8
 			x.preserved = append(x.preserved, r)
 		}
 	}
-
-	// Stack slots sit below the callee-saved pushes of the prologue, so a slot
-	// never overwrites a pushed callee-saved register.
-	x.slot = map[ir.Register]int{}
-	off := 0
-	for _, r := range used {
-		if r.IsVec() {
-			off += 16
-		} else {
-			off += 8
-		}
-		x.slot[r] = -(calleeSavedBytes + off)
-	}
-	x.frame = off + 16
+	x.frame = off
 	if x.frame%16 != 8 {
 		x.frame += 8
 	}
-	x.vecScratch = -(calleeSavedBytes + off + 16)
+}
+
+// pushed reports whether r's physical home is one of the registers the prologue
+// pushes, so that a call already preserves it.
+func (x *x64) pushed(r ir.Register) bool {
+	switch x.physOf[r] {
+	case "%rbx", "%r12", "%r13", "%r14", "%r15":
+		return true
+	}
+	return false
 }
 
 func (x *x64) inst(inst ir.Instruction) error {
@@ -400,7 +445,7 @@ func (x *x64) inst(inst ir.Instruction) error {
 			x.line("\tcvtsi2sdq %s, %s", src, phys)
 		} else {
 			x.line("\tcvtsi2sdq %s, %s", src, xmmScratch1)
-			x.line("\tmovsd %s, %d(%%rbp)", xmmScratch1, x.slot[inst.Dst])
+			x.store(xmmScratch1, inst.Dst)
 		}
 
 	case ir.OpFToI:
@@ -453,7 +498,7 @@ func (x *x64) inst(inst ir.Instruction) error {
 	case ir.OpPrintV:
 		x.saveAll()
 		src := x.loadF(inst.Src[0], xmmScratch1)
-		x.line("\tmovdqu %s, %d(%%rbp)", src, x.vecScratch)
+		x.line("\tmovdqu %s, %d(%%rsp)", src, x.vecScratch)
 		n, step := 4, 4
 		if inst.Vec == ir.VecF64x2 || inst.Vec == ir.VecI64x2 {
 			n, step = 2, 8
@@ -462,17 +507,17 @@ func (x *x64) inst(inst ir.Instruction) error {
 			off := x.vecScratch + i*step
 			switch inst.Vec {
 			case ir.VecF32x4:
-				x.line("\tmovss %d(%%rbp), %%xmm0", off)
+				x.line("\tmovss %d(%%rsp), %%xmm0", off)
 				x.line("\tcvtss2sd %%xmm0, %%xmm0")
 				x.line("\tcall arc_print_f64")
 			case ir.VecF64x2:
-				x.line("\tmovsd %d(%%rbp), %%xmm0", off)
+				x.line("\tmovsd %d(%%rsp), %%xmm0", off)
 				x.line("\tcall arc_print_f64")
 			case ir.VecI32x4:
-				x.line("\tmovslq %d(%%rbp), %%rdi", off)
+				x.line("\tmovslq %d(%%rsp), %%rdi", off)
 				x.line("\tcall arc_print")
 			default: // i64x2
-				x.line("\tmovq %d(%%rbp), %%rdi", off)
+				x.line("\tmovq %d(%%rsp), %%rdi", off)
 				x.line("\tcall arc_print")
 			}
 		}
@@ -519,17 +564,17 @@ func (x *x64) rhsOperand(inst ir.Instruction) string {
 	return fmt.Sprintf("$%d", imm)
 }
 
-// load returns the physical register holding r, spilling from the stack slot
-// into scratch when r is not register-resident.
+// load returns the register or memory operand holding r, spilling into scratch
+// when r is not register-resident.
 func (x *x64) load(r ir.Register, scratch string) string {
 	if phys := x.physOf[r]; phys != "" {
 		return phys
 	}
 	if r.IsVec() {
-		x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], xmmScratch1)
+		x.line("\tmovdqu %d(%%rsp), %s", x.slot[r], xmmScratch1)
 		return xmmScratch1
 	}
-	x.line("\tmovq %d(%%rbp), %s", x.slot[r], scratch)
+	x.line("\tmovq %d(%s), %s", areaOff(r), areaBase, scratch)
 	return scratch
 }
 
@@ -538,7 +583,7 @@ func (x *x64) loadF(r ir.Register, scratch string) string {
 	if phys := x.physOf[r]; phys != "" {
 		return phys
 	}
-	x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], scratch)
+	x.line("\tmovdqu %d(%%rsp), %s", x.slot[r], scratch)
 	return scratch
 }
 
@@ -555,11 +600,23 @@ func (x *x64) store(src string, r ir.Register) {
 		return
 	}
 	if r.IsVec() {
-		x.line("\tmovdqu %s, %d(%%rbp)", src, x.slot[r])
+		x.line("\tmovdqu %s, %d(%%rsp)", src, x.slot[r])
 	} else {
-		x.line("\tmovq %s, %d(%%rbp)", src, x.slot[r])
+		x.line("\tmovq %s, %d(%s)", src, areaOff(r), areaBase)
 	}
 }
+
+// home names the home of r: a physical register, or its slot in the register
+// area.
+func (x *x64) home(r ir.Register) string {
+	if phys := x.physOf[r]; phys != "" {
+		return phys
+	}
+	return fmt.Sprintf("%d(%s)", areaOff(r), areaBase)
+}
+
+// areaOff returns the offset of general-purpose register r in the register area.
+func areaOff(r ir.Register) int { return int(r) * 8 }
 
 func (x *x64) movImm(imm int64, physReg string) {
 	if imm >= math.MinInt32 && imm <= math.MaxInt32 {
@@ -580,24 +637,28 @@ func (x *x64) movImmToDst(imm int64, dst ir.Register) {
 
 func (x *x64) saveAll() {
 	for _, r := range x.used {
-		if phys := x.physOf[r]; phys != "" {
-			if r.IsVec() {
-				x.line("\tmovdqu %s, %d(%%rbp)", phys, x.slot[r])
-			} else {
-				x.line("\tmovq %s, %d(%%rbp)", phys, x.slot[r])
-			}
+		phys := x.physOf[r]
+		if phys == "" {
+			continue
+		}
+		if r.IsVec() {
+			x.line("\tmovdqu %s, %d(%%rsp)", phys, x.slot[r])
+		} else {
+			x.line("\tmovq %s, %d(%s)", phys, areaOff(r), areaBase)
 		}
 	}
 }
 
 func (x *x64) restoreAll() {
 	for _, r := range x.used {
-		if phys := x.physOf[r]; phys != "" {
-			if r.IsVec() {
-				x.line("\tmovdqu %d(%%rbp), %s", x.slot[r], phys)
-			} else {
-				x.line("\tmovq %d(%%rbp), %s", x.slot[r], phys)
-			}
+		phys := x.physOf[r]
+		if phys == "" {
+			continue
+		}
+		if r.IsVec() {
+			x.line("\tmovdqu %d(%%rsp), %s", x.slot[r], phys)
+		} else {
+			x.line("\tmovq %d(%s), %s", areaOff(r), areaBase, phys)
 		}
 	}
 }

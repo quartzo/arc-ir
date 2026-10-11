@@ -71,7 +71,8 @@ func TestEmitAsmContains(t *testing.T) {
 }
 
 func TestEmitAsmRegisterMapping(t *testing.T) {
-	// The first four used registers (r1..r4) map to rbx, r12, r13, r14.
+	// The first used general-purpose registers map to the scratch physical
+	// registers (rcx, rdx, rsi, rdi, r8).
 	asm := buildAsm(t, loopSrc)
 	if !strings.Contains(asm, "call arc_arena_create") {
 		t.Fatal("missing call")
@@ -81,6 +82,44 @@ func TestEmitAsmRegisterMapping(t *testing.T) {
 		t.Errorf("expected a scaled addressing mode in:\n%s", asm)
 	}
 }
+
+// TestEmitAsmArea checks that a module using more general-purpose registers than
+// there are physical ones spills the rest to the register area, addressed
+// through the reserved base register.
+func TestEmitAsmArea(t *testing.T) {
+	asm := buildAsm(t, areaScratchSrc)
+	if !strings.Contains(asm, areaSymbol+":") {
+		t.Errorf("register area %q not declared in:\n%s", areaSymbol, asm)
+	}
+	if !strings.Contains(asm, "(%rbp)") {
+		t.Errorf("no area access through the base register in:\n%s", asm)
+	}
+}
+
+const areaScratchSrc = `
+func main:
+    r1 = 1
+    r2 = 2
+    r3 = 3
+    r4 = 4
+    r5 = 5
+    r6 = 6
+    r7 = 7
+    r8 = 8
+    r9 = 9
+    r10 = 10
+    r1 = ADD r1, r2
+    r1 = ADD r1, r3
+    r1 = ADD r1, r4
+    r1 = ADD r1, r5
+    r1 = ADD r1, r6
+    r1 = ADD r1, r7
+    r1 = ADD r1, r8
+    r1 = ADD r1, r9
+    r1 = ADD r1, r10
+    PRINT r1
+    RET r1
+`
 
 // TestCompileAndRun assembles and runs the emitted code with the system C
 // compiler (which also assembles .s and links the runtime).
@@ -198,6 +237,13 @@ func TestCompileAndRun(t *testing.T) {
 		{"preserved_block", "func main:\n" +
 			"    s0 = 42\n    CALL leaf\n    PRINT s0\n    RET\n" +
 			"func leaf:\n    s0 = 7\n    RET\n", "42"},
+		{"area_scratch", areaScratchSrc, "55"},
+		{"area_preserved", "func main:\n" +
+			"    s0 = 10\n    s1 = 11\n    s2 = 12\n    s3 = 13\n    s4 = 14\n    s5 = 15\n" +
+			"    s6 = 16\n    s7 = 17\n    s8 = 18\n    CALL leaf\n" +
+			"    PRINT s5\n    PRINT s6\n    PRINT s7\n    PRINT s8\n    PRINT s0\n    RET\n" +
+			"func leaf:\n    s5 = 999\n    s6 = 999\n    s7 = 999\n    s8 = 999\n    RET\n",
+			"15\n16\n17\n18\n10"},
 	}
 
 	for _, tc := range cases {

@@ -23,21 +23,36 @@ not report them destroyed.
 
 ## Physical mapping
 
-The 32+32 logical file maps onto the target as:
+The design targets 5 scratch and 10 preserved physical registers, with the rest
+of the 32+32 file living in a fixed memory area addressed through a reserved base
+register. A preserved register whose home a call would clobber is saved on the
+stack if the function actually uses it.
 
-| block     | physical | in the thread area |
-|-----------|----------|--------------------|
-| scratch   | 5        | 27                 |
-| preserved | 10       | 22                 |
+The x86_64 backend realizes this with the registers the machine has. Its sixteen
+general-purpose registers must also cover the stack pointer, the area base
+(`%rbp`) and the code generator's scratch, which leaves room for 5 scratch and 6
+preserved physical registers:
 
-The area is a fixed per-thread region, addressed through a reserved base
-register. A preserved register whose home would be clobbered by a call is saved
-on the stack if the function actually uses it.
+| block     | physical                           | in the area |
+|-----------|------------------------------------|-------------|
+| scratch   | 5 (`%rcx %rdx %rsi %rdi %r8`)      | 27          |
+| preserved | 6 (`%rbx %r12 %r13 %r14 %r15 %r9`) | 26          |
+
+Scratch gets caller-saved registers (it is volatile, so nothing has to survive a
+call). Preserved gets the callee-saved ones plus `%r9`; the callee backs up, on
+the stack, the preserved registers it writes whose home is not already covered
+by the prologue pushes. The area is a region of one 8-byte slot per
+general-purpose register: a register with no physical home lives there, and a
+call reaches the same slot from every function through the base register. In the
+current single-threaded backend the area is a static `.bss` symbol
+(`arc_regsv`); the model calls for it to be per-thread.
 
 ## Status
 
-The logical blocks and their semantics are implemented: scratch is volatile and
-preserved is callee-saved, with the backend saving the preserved registers a
-function uses and no `saveAll` around calls. The physical/area split above is
-**not yet implemented** — the backend still uses its earlier mapping (physical
-registers plus per-function stack slots).
+The physical/area mapping is implemented: every general-purpose register the
+module uses is assigned either a physical register or an area slot, the area is
+addressed through the reserved base register, and a call preserves the preserved
+registers (prologue pushes plus stack backups). Vector registers still spill to
+the stack. The scratch/preserved counts are 5/6 rather than the 5/10 target
+because of the x86_64 register budget above.
+

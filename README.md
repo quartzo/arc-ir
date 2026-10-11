@@ -34,7 +34,7 @@ verification and code generation stay simple and direct.
 | 3 | `.arc` syntax parser (`pkg/parser`) | ✅ |
 | 4 | x86_64 GNU assembly backend (`pkg/codegen`) | ✅ |
 | 4 | C support runtime (`pkg/runtime`) | ✅ |
-| — | Register allocator: ARC regs → physical regs | ✅ (spill-on-pressure) |
+| — | Register allocator: ARC regs → physical regs + register area | ✅ |
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(...)`) with interprocedural size checks | ✅ |
@@ -51,6 +51,7 @@ verification and code generation stay simple and direct.
 | — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
 | — | Enums: tagged unions (`VARIANT`/`JV`) with active-variant tag refinement | ✅ |
 | — | Register blocks: scratch `r0..r31` (volatile) and preserved `s0..s31` (callee-saved) | ✅ |
+| — | Physical/area mapping: physical registers + fixed area via a reserved base register | ✅ |
 
 ## Layout
 
@@ -75,19 +76,20 @@ Registers are plain 64-bit machine registers with no types of their own — the
 verifier tracks their abstract type per program point. A value that must survive
 a call lives in a preserved register. See [`docs/registers.md`](docs/registers.md).
 
-The backend assigns each *used* register to a physical register, callee-saved
-first, and spills the remainder to stack slots:
+The backend assigns each *used* general-purpose register either a physical
+register or a slot in a fixed **register area**, addressed through a reserved
+base register (`%rbp`):
 
-| Priority | Physical register | Notes |
-|----------|-------------------|-------|
-| 1 | `%rbx`, `%r12`, `%r13`, `%r14`, `%r15` | callee-saved |
-| 2 | `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8`, `%r9` | caller-saved |
-| 3 | stack slots | spill when > 11 registers are live |
-| — | `%r10`, `%r11`, `%rax` | reserved scratch |
-| — | `%rsp` | stack pointer |
+| block     | physical registers                  | in the area |
+|-----------|-------------------------------------|-------------|
+| scratch   | `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8` (caller-saved) | the rest |
+| preserved | `%rbx`, `%r12`, `%r13`, `%r14`, `%r15`, `%r9` | the rest |
+| — | `%r10`, `%r11`, `%rax` reserved scratch; `%rsp` stack pointer; `%rbp` area base | — |
 
-The 32+32 logical file currently maps through this earlier scheme (physical
-registers plus per-function stack slots); the physical/area split is still open.
+A call preserves the preserved registers (the prologue pushes the callee-saved
+physical ones and backs up the others it writes). Vector registers spill to the
+stack. See [`docs/registers.md`](docs/registers.md) for why the physical counts
+are 5/6 rather than the 5/10 the model targets.
 
 ## Instruction set
 

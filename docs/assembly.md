@@ -27,8 +27,9 @@ memory-safe.
 - **Word size:** 64 bits. Every register holds a 64-bit value. Memory is
   accessed in **typed widths** of 1, 2, 4 or 8 bytes; a load extends the value
   to 64 bits and a store writes the low bytes (see §4.3).
-- **Registers:** 16 general-purpose registers (`r0`–`r15`) and 16 vector
-  registers (`v0`–`v15`, mapped to XMM) for floats and SIMD.
+- **Registers:** 32 scratch general-purpose registers (`r0`–`r31`, volatile
+  across a call) and 32 preserved ones (`s0`–`s31`, callee-saved), plus 16
+  vector registers (`v0`–`v15`, mapped to XMM) for floats and SIMD.
 - **Memory:** byte-addressable, little-endian, addressed through 64-bit
   pointers. All application memory is obtained from **arenas** (see §5).
 - **Control:** direct jumps to labels; no indirect jumps or computed targets.
@@ -39,8 +40,9 @@ memory-safe.
 |----------|------|
 | `r0` | return value |
 | `r1`–`r4` | first four function arguments |
-| `r5`–`r15` | general purpose / temporaries |
-| `v0`–`v15` | vector registers: floats (`f64`) and, later, SIMD |
+| `r5`–`r31` | scratch temporaries (volatile across a call) |
+| `s0`–`s31` | preserved / callee-saved: a value that must survive a call lives here |
+| `v0`–`v15` | vector registers: floats (`f32`/`f64`) and SIMD |
 
 Registers are untyped at the machine level. The verifier assigns each register
 an abstract type at every program point — an integer type (`i8`…`i64`,
@@ -48,10 +50,10 @@ an abstract type at every program point — an integer type (`i8`…`i64`,
 use. Only general registers may hold integers, arenas or pointers; floats live
 in vector registers.
 
-The backend maps ARC registers onto physical x86_64 registers: general
-registers prefer callee-saved ones and spill to the stack under pressure;
-vector registers map to XMM. The argument and return registers (`r0`–`r4`) are
-always register-resident.
+The backend maps the flat file onto physical x86_64 registers plus a fixed
+**register area**: 5 scratch and 6 preserved registers are register-resident and
+the rest live in the area, addressed through a reserved base register (`%rbp`);
+vector registers map to XMM. See [`registers.md`](registers.md).
 
 ## 4. Instructions
 
