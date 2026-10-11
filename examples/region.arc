@@ -1,7 +1,7 @@
 ; region.arc - a region is created and released by the same function: the caller
 ; creates it and it is released automatically when the caller returns. A callee
 ; borrows it (an arena parameter) and allocates from it.
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 64
     r1 = s0
     CALL fill
@@ -9,7 +9,7 @@ func main
     RET r0
 endfunc
 
-func fill(r1: arena)
+func fill(r1: arena) -> i64
     r2 = ARENA_ALLOC r1, [i64; 8]
     r3 = 5
     STORE [r2], r3

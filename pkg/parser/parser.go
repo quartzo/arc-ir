@@ -730,7 +730,7 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 }
 
 // parseFunc parses "func name(param: type, ...)" (the block is closed by
-// "endfunc"). An optional return type follows as "-> type".
+// "endfunc"). A return type is required and follows as "-> type".
 func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 	c := &cursor{toks: toks, line: lineNo}
 	c.pos = 1 // skip "func"
@@ -784,26 +784,27 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			return ir.Instruction{}, err
 		}
 	}
-	// Optional return type: "-> type".
-	if c.peek() == "-" && c.peekAt(1) == ">" {
-		c.pos += 2
-		spec, err := parseTypeSpec(c, lineNo)
-		if err != nil {
-			return ir.Instruction{}, err
-		}
-		if spec.kind == ir.KindScalar && spec.scalar.Float() {
-			return ir.Instruction{}, fmt.Errorf("line %d: float return types are not supported", lineNo)
-		}
-		if spec.kind == ir.KindArena {
-			return ir.Instruction{}, fmt.Errorf("line %d: an arena cannot be returned: a region lives only as long as the function that creates it (pass a region down instead)", lineNo)
-		}
-		inst.RetKind = spec.kind
-		inst.RetScalar = spec.scalar
-		inst.RetStruct = spec.structName
-		inst.RetElem = spec.elem
-		inst.RetCount = spec.count
-		inst.RetSize = spec.size
+	// The return type is required: "-> type".
+	if c.peek() != "-" || c.peekAt(1) != ">" {
+		return ir.Instruction{}, fmt.Errorf("line %d: function %s must declare a return type, e.g. \"-> i64\"", lineNo, name)
 	}
+	c.pos += 2
+	spec, err := parseTypeSpec(c, lineNo)
+	if err != nil {
+		return ir.Instruction{}, err
+	}
+	if spec.kind == ir.KindScalar && spec.scalar.Float() {
+		return ir.Instruction{}, fmt.Errorf("line %d: float return types are not supported", lineNo)
+	}
+	if spec.kind == ir.KindArena {
+		return ir.Instruction{}, fmt.Errorf("line %d: an arena cannot be returned: a region lives only as long as the function that creates it (pass a region down instead)", lineNo)
+	}
+	inst.RetKind = spec.kind
+	inst.RetScalar = spec.scalar
+	inst.RetStruct = spec.structName
+	inst.RetElem = spec.elem
+	inst.RetCount = spec.count
+	inst.RetSize = spec.size
 
 	if err := noTrailing(c); err != nil {
 		return ir.Instruction{}, err

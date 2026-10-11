@@ -1,5 +1,5 @@
 ; simd64.arc - packed f64x2 and i64x2 arithmetic.
-func main
+func main -> i64
     v1 = f64x2(1.5, 2.5)
     v2 = f64x2(10.0, 20.0)
     v3 = VADD v1, v2

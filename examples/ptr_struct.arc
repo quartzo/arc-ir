@@ -6,7 +6,7 @@ struct Node
     val: i64
 endstruct
 
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC s0, Node
     r3 = ARENA_ALLOC s0, Node
@@ -21,7 +21,7 @@ func main
     RET r0
 endfunc
 
-func read(r1: ptr(Node))
+func read(r1: ptr(Node)) -> i64
     r2 = r1.next
     r0 = r2.val
     RET r0

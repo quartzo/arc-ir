@@ -55,7 +55,7 @@ clarity the current syntax lacks without importing a high-level block syntax.
 
 ```arc
 ; functions — no trailing colon, explicit end
-func main
+func main -> i64
     r1 = 3
     r2 = 4
     CALL add
@@ -63,7 +63,7 @@ func main
     RET r0
 endfunc
 
-func add(r1: i64, r2: i64)
+func add(r1: i64, r2: i64) -> i64
     r0 = ADD r1, r2
     RET r0
 endfunc
@@ -120,7 +120,7 @@ Proposed:
 ```
 program    := { top }
 top        := function | structdef | enumdef
-function   := "func" ident [ "(" params ")" ] [ "->" type ] { instruction } "endfunc"
+function   := "func" ident [ "(" params ")" ] "->" type { instruction } "endfunc"
 structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
 enumdef    := "enum" ident { variant } "endenum"
 field      := ident ":" type

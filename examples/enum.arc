@@ -8,7 +8,7 @@ enum Value
     Nil
 endenum
 
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC s0, Value
     VARIANT r2, Value.Int

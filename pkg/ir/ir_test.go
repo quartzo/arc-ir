@@ -67,6 +67,18 @@ func buildProgram(instrs ...Instruction) *Program {
 	return &Program{Instrs: instrs}
 }
 
+func TestFuncString(t *testing.T) {
+	// The return type is always rendered, even for the i64 default.
+	scalar := Instruction{Op: OpFunc, Label: "f", RetKind: KindScalar, RetScalar: I64}
+	if got, want := scalar.String(), "func f() -> i64:"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+	ptr := Instruction{Op: OpFunc, Label: "g", RetKind: KindPtr, RetElem: I64, RetCount: 8, RetSize: 64}
+	if got, want := ptr.String(), "func g() -> ptr([i64; 8]):"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
 func TestBuildFunctionCFG(t *testing.T) {
 	// entry falls through into a conditional jump block that targets "done".
 	prog := buildProgram(
@@ -118,6 +130,15 @@ func TestBuildFunctionErrors(t *testing.T) {
 			Instruction{Op: OpLabel, Label: "a"},
 			Instruction{Op: OpRet},
 			Instruction{Op: OpMov, Dst: 1, Imm: 1},
+		)},
+		{"falls off end", buildProgram(
+			Instruction{Op: OpLabel, Label: "a"},
+			Instruction{Op: OpMov, Dst: 1, Imm: 1},
+		)},
+		{"falls off end at conditional", buildProgram(
+			Instruction{Op: OpLabel, Label: "a"},
+			Instruction{Op: OpMov, Dst: 1, Imm: 1},
+			Instruction{Op: OpJeq, Src: [2]Register{1, NoReg}, Imm: 0, Label: "a"},
 		)},
 	}
 	for _, tc := range cases {

@@ -444,7 +444,8 @@ type Instruction struct {
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
 	// RetKind/RetSize hold a function's declared return type (OpFunc only).
-	// The zero value (KindScalar, 0) means a scalar return.
+	// Every function declares one; the zero value (KindScalar, I64) is the
+	// default used for the implicit entry of a program with no `func` header.
 	RetKind   ValKind
 	RetScalar ScalarKind
 	RetSize   int64
@@ -769,9 +770,6 @@ func formatParamType(p Param) string {
 }
 
 func formatRet(i Instruction) string {
-	if i.RetKind == KindScalar && i.RetScalar == I64 {
-		return ""
-	}
 	switch i.RetKind {
 	case KindPtr:
 		p := Param{Kind: KindPtr, Size: i.RetSize, Struct: i.RetStruct, Elem: i.RetElem, Count: i.RetCount}

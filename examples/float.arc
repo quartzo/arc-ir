@@ -1,5 +1,5 @@
 ; float.arc - f64 scalar arithmetic and integer<->float conversions.
-func main
+func main -> i64
     v1 = 2.5
     v2 = 4.0
     v3 = FMUL v1, v2        ; 10.0

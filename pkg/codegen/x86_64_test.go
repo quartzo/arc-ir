@@ -91,7 +91,7 @@ func TestInlineNotAppliedWithPreserved(t *testing.T) {
 		"    r0 = s0\n"+
 		"    RET r0\n"+
 		"endfunc\n"+
-		"func main\n"+
+		"func main -> i64\n"+
 		"    r1 = 5\n"+
 		"    CALL f\n"+
 		"    PRINT r0\n"+
@@ -116,7 +116,7 @@ func TestEmitAsmArea(t *testing.T) {
 }
 
 const areaScratchSrc = "\n" +
-	"func main\n" +
+	"func main -> i64\n" +
 	"    r1 = 1\n" +
 	"    r2 = 2\n" +
 	"    r3 = 3\n" +
@@ -155,24 +155,24 @@ func TestCompileAndRun(t *testing.T) {
 	}{
 		{"loop", loopSrc, "9"},
 		{"hello", "entry:\n    r1 = 40\n    r2 = 2\n    r3 = ADD r1, r2\n    PRINT r3\n    RET r3\n", "42"},
-		{"call", "func main\n" +
+		{"call", "func main -> i64\n" +
 			"    r1 = 3\n" +
 			"    r2 = 4\n" +
 			"    CALL add\n" +
 			"    PRINT r0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
-			"func add(r1: i64, r2: i64)\n" +
+			"func add(r1: i64, r2: i64) -> i64\n" +
 			"    r0 = ADD r1, r2\n" +
 			"    RET r0\n" +
 			"endfunc\n", "7"},
-		{"fact", "func main\n" +
+		{"fact", "func main -> i64\n" +
 			"    r1 = 5\n" +
 			"    CALL fact\n" +
 			"    PRINT r0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
-			"func fact(r1: i64)\n" +
+			"func fact(r1: i64) -> i64\n" +
 			"    JGT r1, 1, rec\n" +
 			"    r0 = 1\n" +
 			"    RET r0\n" +
@@ -184,7 +184,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    r0 = MUL s0, r0\n" +
 			"    RET r0\n" +
 			"endfunc\n", "120"},
-		{"ptr", "func main\n" +
+		{"ptr", "func main -> i64\n" +
 			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r2 = ARENA_ALLOC s0, [i64; 8]\n" +
 			"    r3 = 42\n" +
@@ -194,11 +194,11 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
-			"func read(r1: ptr([i64; 8]))\n" +
+			"func read(r1: ptr([i64; 8])) -> i64\n" +
 			"    r0 = LOAD [r1]\n" +
 			"    RET r0\n" +
 			"endfunc\n", "42"},
-		{"ret_ptr", "func main\n" +
+		{"ret_ptr", "func main -> i64\n" +
 			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r1 = s0\n" +
 			"    CALL make\n" +
@@ -219,7 +219,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    c: u32\n" +
 			"    d: u64\n" +
 			"endstruct\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 			"    r2 = ARENA_ALLOC r1, Rec\n" +
 			"    r3 = 200\n" +
@@ -240,7 +240,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r10\n" +
 			"    RET r7\n" +
 			"endfunc\n", "200\n40000\n3000000000\n123456789"},
-		{"growable", "func main\n" +
+		{"growable", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
 			"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
 			"    r3 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -250,7 +250,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r5\n" +
 			"    RET r5\n" +
 			"endfunc\n", "77"},
-		{"auto_free", "func main\n" +
+		{"auto_free", "func main -> i64\n" +
 			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r1 = ARENA_ALLOC s0, [i64; 8]\n" +
 			"    r2 = 42\n" +
@@ -264,7 +264,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    r0 = r2\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    s0 = 0\n" +
 			"    r0 = 0\n" +
 			"loop:\n" +
@@ -277,7 +277,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r0\n" +
 			"    RET r0\n" +
 			"endfunc\n", "5"},
-		{"float", "func main\n" +
+		{"float", "func main -> i64\n" +
 			"    v1 = 2.5\n" +
 			"    v2 = 4.0\n" +
 			"    v3 = FMUL v1, v2\n" +
@@ -287,7 +287,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r1\n" +
 			"    RET r1\n" +
 			"endfunc\n", "12.5\n12"},
-		{"f32", "func main\n" +
+		{"f32", "func main -> i64\n" +
 			"    v1 = f32(2.5)\n" +
 			"    v2 = f32(4.0)\n" +
 			"    v3 = FMUL v1, v2\n" +
@@ -297,14 +297,14 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r1\n" +
 			"    RET r1\n" +
 			"endfunc\n", "12.5\n12"},
-		{"simd", "func main\n" +
+		{"simd", "func main -> i64\n" +
 			"    v1 = f32x4(1.0, 2.0, 3.0, 4.0)\n" +
 			"    v2 = f32x4(10.0, 20.0, 30.0, 40.0)\n" +
 			"    v3 = VADD v1, v2\n" +
 			"    PRINTV v3\n" +
 			"    RET\n" +
 			"endfunc\n", "11\n22\n33\n44"},
-		{"simd64", "func main\n" +
+		{"simd64", "func main -> i64\n" +
 			"    v1 = f64x2(1.5, 2.5)\n" +
 			"    v2 = f64x2(10.0, 20.0)\n" +
 			"    v3 = VADD v1, v2\n" +
@@ -319,7 +319,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    next: ptr([i64; 1])\n" +
 			"    val: i64\n" +
 			"endstruct\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 			"    r2 = ARENA_ALLOC r1, Node\n" +
 			"    r3 = ARENA_ALLOC r1, [i64; 1]\n" +
@@ -339,7 +339,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    next: ptr([i64; 1])\n" +
 			"    val: i64\n" +
 			"endstruct\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 			"    r2 = ARENA_ALLOC s0, Node\n" +
 			"    r3 = ARENA_ALLOC s0, [i64; 1]\n" +
@@ -353,12 +353,12 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
-			"func read(r1: ptr(Node))\n" +
+			"func read(r1: ptr(Node)) -> i64\n" +
 			"    r2 = r1.next\n" +
 			"    r0 = LOAD [r2]\n" +
 			"    RET r0\n" +
 			"endfunc\n", "42"},
-		{"array", "func main\n" +
+		{"array", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
 			"    r2 = ARENA_ALLOC r1, [i64; 4]\n" +
 			"    r3 = 11\n" +
@@ -371,7 +371,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r6\n" +
 			"    RET r5\n" +
 			"endfunc\n", "11\n22"},
-		{"f64_array", "func main\n" +
+		{"f64_array", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n" +
 			"    r2 = ARENA_ALLOC r1, [f64; 4]\n" +
 			"    v1 = 1.5\n" +
@@ -380,7 +380,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINTF v2\n" +
 			"    RET\n" +
 			"endfunc\n", "1.5"},
-		{"bytes", "func main\n" +
+		{"bytes", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r2 = ARENA_ALLOC r1, [u8; 8]\n" +
 			"    r3 = 65\n" +
@@ -393,7 +393,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r6\n" +
 			"    RET r5\n" +
 			"endfunc\n", "65\n66"},
-		{"u16_i8", "func main\n" +
+		{"u16_i8", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r2 = ARENA_ALLOC r1, [u16; 2]\n" +
 			"    r3 = 50000\n" +
@@ -407,7 +407,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r7\n" +
 			"    RET r4\n" +
 			"endfunc\n", "50000\n-5"},
-		{"unsigned_cmp", "func main\n" +
+		{"unsigned_cmp", "func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r2 = ARENA_ALLOC r1, [u8; 2]\n" +
 			"    r3 = 200\n" +
@@ -424,7 +424,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    a: u8\n" +
 			"    b: u32\n" +
 			"endstruct\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r2 = ARENA_ALLOC r1, P\n" +
 			"    r3 = 9\n" +
@@ -440,7 +440,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    Pair(a: i32, b: i32)\n" +
 			"    Nil\n" +
 			"endenum\n" +
-			"func main\n" +
+			"func main -> i64\n" +
 			"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 			"    r2 = ARENA_ALLOC s0, Value\n" +
 			"    VARIANT r2, Value.Int\n" +
@@ -466,18 +466,18 @@ func TestCompileAndRun(t *testing.T) {
 			"    r0 = ADD r2, r3\n" +
 			"    RET r0\n" +
 			"endfunc\n", "42"},
-		{"preserved_block", "func main\n" +
+		{"preserved_block", "func main -> i64\n" +
 			"    s0 = 42\n" +
 			"    CALL leaf\n" +
 			"    PRINT s0\n" +
 			"    RET\n" +
 			"endfunc\n" +
-			"func leaf\n" +
+			"func leaf -> i64\n" +
 			"    s0 = 7\n" +
 			"    RET\n" +
 			"endfunc\n", "42"},
 		{"area_scratch", areaScratchSrc, "55"},
-		{"area_preserved", "func main\n" +
+		{"area_preserved", "func main -> i64\n" +
 			"    s0 = 10\n" +
 			"    s1 = 11\n" +
 			"    s2 = 12\n" +
@@ -495,7 +495,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT s0\n" +
 			"    RET\n" +
 			"endfunc\n" +
-			"func leaf\n" +
+			"func leaf -> i64\n" +
 			"    s5 = 999\n" +
 			"    s6 = 999\n" +
 			"    s7 = 999\n" +

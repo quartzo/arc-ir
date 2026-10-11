@@ -183,6 +183,15 @@ func buildBlocks(f *Function) error {
 		return lineErr(0, fmt.Errorf("function %s has no instructions", f.Name))
 	}
 
+	// A function may not fall off its end: the last block must transfer control
+	// explicitly, so every exit reaches a RET (or loops forever via JMP). This
+	// matters for safety: a fall-through would otherwise return garbage (the
+	// codegen synthesises a 0), which for a pointer return is a null dereference.
+	last := f.Blocks[len(f.Blocks)-1]
+	if n := len(last.Instrs); n == 0 || !last.Instrs[n-1].Op.IsTerminator() {
+		return lineErr(lastInstrLine(f), fmt.Errorf("function %s may fall off its end: add an explicit RET", f.Name))
+	}
+
 	f.Succs = make([][]int, len(f.Blocks))
 	f.Preds = make([][]int, len(f.Blocks))
 	for bi, b := range f.Blocks {
@@ -223,6 +232,18 @@ func buildBlocks(f *Function) error {
 		}
 	}
 	return nil
+}
+
+// lastInstrLine returns the source line of the last instruction in the
+// function, searching backwards across blocks so that an error about the end
+// of the function points somewhere useful (the final block may be empty).
+func lastInstrLine(f *Function) int {
+	for bi := len(f.Blocks) - 1; bi >= 0; bi-- {
+		if n := len(f.Blocks[bi].Instrs); n > 0 {
+			return f.Blocks[bi].Instrs[n-1].Line
+		}
+	}
+	return 0
 }
 
 func (f *Function) labelIndex(inst Instruction) (int, error) {

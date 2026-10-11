@@ -6,7 +6,7 @@ struct Box
     p: ptr([i64; 8])
 endstruct
 
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 256
     s1 = ARENA_ALLOC s0, Box
     s2 = ARENA_ALLOC s0, [i64; 8]
@@ -16,7 +16,7 @@ func main
     RET
 endfunc
 
-func fill(r1: ptr(Box))
+func fill(r1: ptr(Box)) -> i64
     r2 = ARENA_CREATE DRAM_LOCAL, 64
     r3 = ARENA_ALLOC r2, [i64; 8]
     r1.p = r3

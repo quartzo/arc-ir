@@ -218,6 +218,8 @@ func (x *x64) emitFunc(f *ir.Function) error {
 		}
 	}
 
+	// Every block ends in a terminator (the verifier rejects falling off the
+	// end), so this is only a defensive default for the implicit epilogue.
 	x.line("\tmovq $0, %%rax")
 	x.line("%s:", x.epilogueLabel())
 	for i := len(x.preserved) - 1; i >= 0; i-- {

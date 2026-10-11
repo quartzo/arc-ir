@@ -86,13 +86,13 @@ func TestParseMovForms(t *testing.T) {
 }
 
 func TestParseFunc(t *testing.T) {
-	src := "func main\n" +
+	src := "func main -> i64\n" +
 		"    r1 = 3\n" +
 		"    r2 = 4\n" +
 		"    CALL add\n" +
 		"    RET r0\n" +
 		"endfunc\n" +
-		"func add(r1: i64, r2: i64)\n" +
+		"func add(r1: i64, r2: i64) -> i64\n" +
 		"    r0 = ADD r1, r2\n" +
 		"    RET r0\n" +
 		"endfunc\n"
@@ -121,7 +121,7 @@ func TestParseFunc(t *testing.T) {
 }
 
 func TestParsePtrParam(t *testing.T) {
-	prog, err := Parse("func f(r1: ptr([i64; 8]))\n" +
+	prog, err := Parse("func f(r1: ptr([i64; 8])) -> i64\n" +
 		"    RET\n" +
 		"endfunc\n")
 	if err != nil {
@@ -153,10 +153,10 @@ func TestParseReturnType(t *testing.T) {
 }
 
 func TestParseInline(t *testing.T) {
-	prog, err := Parse("inline func f(r1: i64)\n" +
+	prog, err := Parse("inline func f(r1: i64) -> i64\n" +
 		"    RET r1\n" +
 		"endfunc\n" +
-		"func main\n" +
+		"func main -> i64\n" +
 		"    RET\n" +
 		"endfunc\n")
 	if err != nil {
@@ -171,7 +171,7 @@ func TestParseInline(t *testing.T) {
 }
 
 func TestParseArenaParam(t *testing.T) {
-	prog, err := Parse("func f(r1: arena, r2: ptr([i64; 8]))\n" +
+	prog, err := Parse("func f(r1: arena, r2: ptr([i64; 8])) -> i64\n" +
 		"    RET\n" +
 		"endfunc\n")
 	if err != nil {
@@ -289,7 +289,7 @@ func TestParseStruct(t *testing.T) {
 		"    next: ptr([i64; 1])\n" +
 		"    val: i64\n" +
 		"endstruct\n" +
-		"func main\n" +
+		"func main -> i64\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
 		"    r3 = r2.next\n" +
 		"    r2.val = r3\n" +
@@ -325,7 +325,7 @@ func TestParsePtrStruct(t *testing.T) {
 		"    next: ptr([i64; 1])\n" +
 		"    val: i64\n" +
 		"endstruct\n" +
-		"func f(r1: ptr(Node))\n" +
+		"func f(r1: ptr(Node)) -> i64\n" +
 		"    RET\n" +
 		"endfunc\n")
 	if err != nil {
@@ -386,7 +386,7 @@ func TestParseEnum(t *testing.T) {
 		"    Pair(a: i32, b: i32)\n" +
 		"    Nil\n" +
 		"endenum\n" +
-		"func main\n" +
+		"func main -> i64\n" +
 		"    r1 = ARENA_ALLOC r0, Value\n" +
 		"    VARIANT r1, Value.Pair\n" +
 		"    JV r1, Value.Int, x\n" +
@@ -428,16 +428,16 @@ func TestParseErrors(t *testing.T) {
 		{"bad scale", "STORE [r1 + r2*3], r3\n", "scale must be"},
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
-		{"raw ptr rejected", "func f(r1: ptr(64))\n" +
+		{"raw ptr rejected", "func f(r1: ptr(64)) -> i64\n" +
 			"    RET\n" +
 			"endfunc\n", "ptr needs a struct or array"},
 		{"raw ptr return rejected", "func f() -> ptr(64)\n" +
 			"    RET\n" +
 			"endfunc\n", "ptr needs a struct or array"},
-		{"unknown param type", "func f(r1: blob)\n" +
+		{"unknown param type", "func f(r1: blob) -> i64\n" +
 			"    RET\n" +
 			"endfunc\n", "unknown type"},
-		{"own param rejected", "func f(r1: own arena)\n" +
+		{"own param rejected", "func f(r1: own arena) -> i64\n" +
 			"    RET\n" +
 			"endfunc\n", "'own' is not supported"},
 		{"arena return rejected", "func f() -> arena\n" +
@@ -448,13 +448,16 @@ func TestParseErrors(t *testing.T) {
 			"endstruct\n", "arena field is not supported"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
-		{"missing endfunc", "func f\n    RET\n", "unterminated function"},
+		{"missing return type", "func f\n    RET\nendfunc\n", "must declare a return type"},
+		{"missing return type with params", "func f(r1: i64)\n    RET r1\nendfunc\n", "must declare a return type"},
+		{"missing return type inline", "inline func f(r1: i64)\n    RET r1\nendfunc\n", "must declare a return type"},
+		{"missing endfunc", "func f -> i64\n    RET\n", "unterminated function"},
 		{"unterminated struct", "struct S\n    a: u8\n", "unterminated struct"},
 		{"unterminated enum", "enum E\n    A\n", "unterminated enum"},
 		{"stray endfunc", "endfunc\n", "no open block"},
-		{"mismatched endstruct", "func f\n    RET\nendstruct\n", "cannot close"},
-		{"nested func", "func f\n    func g\nendfunc\n", "cannot start inside"},
-		{"trailing after endfunc", "func f\n    RET\nendfunc now\n", "unexpected token"},
+		{"mismatched endstruct", "func f -> i64\n    RET\nendstruct\n", "cannot close"},
+		{"nested func", "func f -> i64\n    func g\nendfunc\n", "cannot start inside"},
+		{"trailing after endfunc", "func f -> i64\n    RET\nendfunc now\n", "unexpected token"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

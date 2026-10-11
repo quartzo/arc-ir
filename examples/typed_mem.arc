@@ -8,7 +8,7 @@ struct Rec
     d: u64
 endstruct
 
-func main
+func main -> i64
     r1 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC r1, Rec
     r3 = 200

@@ -146,14 +146,14 @@ recurse.
 `examples/fact.arc`:
 
 ```arc
-func main
+func main -> i64
     r1 = 5
     CALL fact
     PRINT r0
     RET r0
 endfunc
 
-func fact(r1: i64)
+func fact(r1: i64) -> i64
     JGT r1, 1, rec
     r0 = 1
     RET r0
@@ -174,10 +174,12 @@ array `ptr([T; N])`). The verifier checks each function independently against it
 parameter types, and at every call site checks argument types and that a pointer
 argument is at least as large as declared. Functions may recurse.
 
-A function may also declare a return type with `->` (`ptr(...)`; the default is
-`i64`). The verifier checks the value returned at each `RET` against that type
-and gives the caller's `r0` the declared type. An `arena` cannot be returned: a
-region lives only as long as the function that creates it.
+Every function declares its return type with `->` (required; e.g. `-> i64` or
+`-> ptr(...)`). The verifier checks the value returned at each `RET` against that
+type and gives the caller's `r0` the declared type. Every function must end its
+last block with an explicit terminator (`RET`, or `JMP` for a function that never
+returns); a body that falls off its end is rejected. An `arena` cannot be
+returned: a region lives only as long as the function that creates it.
 
 A function marked `inline func` is expanded at each call site by the backend,
 when it uses no preserved registers, so a loop body can be delegated to a
@@ -204,14 +206,14 @@ local region may not be returned or stored into memory that outlives the call.
 `examples/region.arc`:
 
 ```arc
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 64
     r1 = s0
     CALL fill
     RET                       ; s0 is released here automatically
 endfunc
 
-func fill(r1: arena)
+func fill(r1: arena) -> i64
     r2 = ARENA_ALLOC r1, [i64; 8]
     r3 = 5
     STORE [r2], r3

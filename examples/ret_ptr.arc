@@ -1,7 +1,7 @@
 ; ret_ptr.arc - the caller owns the region and passes it down; a callee returns
 ; a data pointer into it. The region outlives the call, so the pointer is valid.
 ; The arena handle survives the call, so it lives in a preserved register (s0).
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 64
     r1 = s0                 ; pass the borrowed region
     CALL make               ; make(r1) -> ptr([i64; 8])

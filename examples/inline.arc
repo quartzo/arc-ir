@@ -10,7 +10,7 @@ inline func step(r1: i64) -> i64
     RET r0
 endfunc
 
-func main
+func main -> i64
     s0 = 0
     r0 = 0
 loop:

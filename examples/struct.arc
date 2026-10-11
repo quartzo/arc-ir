@@ -4,7 +4,7 @@ struct Node
     val: i64
 endstruct
 
-func main
+func main -> i64
     r1 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC r1, Node
     r3 = ARENA_ALLOC r1, Node

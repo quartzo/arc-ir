@@ -138,7 +138,7 @@ out-of-memory (a safe failure), whereas a fixed arena never fails at run time.
 | `JMP label` | unconditional jump |
 | `J<cc> ra, rb, label` | jump to `label` if the comparison holds |
 | `CALL name` | call function `name`; result in `r0` |
-| `RET rsrc` | return (from the function, or the process for `main`) |
+| `RET rsrc` | return (from the function, or the process for `main`); `rsrc` is optional for a scalar return (returns 0) and required for a `ptr` return |
 
 Condition codes:
 
@@ -245,7 +245,7 @@ Memory is typed by the **region type**, not by ad-hoc writes:
 Functions are declared with `func` and closed with `endfunc`:
 
 ```
-func main
+func main -> i64
     r1 = 3
     r2 = 4
     CALL add
@@ -253,7 +253,7 @@ func main
     RET r0
 endfunc
 
-func add(r1: i64, r2: i64)
+func add(r1: i64, r2: i64) -> i64
     r0 = ADD r1, r2
     RET r0
 endfunc
@@ -290,7 +290,7 @@ parameter is **borrowed**: the callee may allocate from it but the region
 belongs to the caller (see §7):
 
 ```
-func read(r1: ptr([i64; 8]))
+func read(r1: ptr([i64; 8])) -> i64
     r0 = LOAD [r1]
     RET r0
 endfunc
@@ -301,7 +301,7 @@ types, and at every call site that the argument registers have the declared
 types and that a pointer argument is at least as large as declared. Functions
 may recurse.
 
-A function may declare a return type with `->`:
+A function declares its return type with `->` (the declaration is required):
 
 ```
 func make(r1: arena) -> ptr([i64; 8])
@@ -310,14 +310,18 @@ func make(r1: arena) -> ptr([i64; 8])
 endfunc
 ```
 
-The default return type is `i64`. The verifier checks at every `RET` that
-the returned register matches the declared return type (and, for a `ptr`, that
-the target matches and the allocation is large enough and still live), and gives
-the caller's `r0` that type after the call. An `arena` cannot be returned: a
-region lives only as long as the function that creates it.
+The verifier checks at every `RET` that the returned register matches the
+declared return type (and, for a `ptr`, that the target matches and the
+allocation is large enough and still live), and gives the caller's `r0` that
+type after the call. Every function must end its last block with an explicit
+terminator (`RET`, or `JMP` for a function that never returns). A body that
+*falls off its end* is rejected: the synthesised return would otherwise hand the
+caller a bogus value (0 typed as a live `ptr`), which dereferencing could follow
+into a null access. An `arena` cannot be returned: a region lives only as long
+as the function that creates it.
 
 A program with no `func` declaration is treated as a single entry function
-named `main`.
+named `main` returning `i64`.
 
 ## 7. Regions and lifetime
 
@@ -337,14 +341,14 @@ release.
   the region outlives the call.
 
 ```
-func main
+func main -> i64
     s0 = ARENA_CREATE DRAM_LOCAL, 64   ; the region belongs to main
     r1 = s0
     CALL fill                          ; fill borrows s0
     RET                                ; s0 is released here automatically
 endfunc
 
-func fill(r1: arena)
+func fill(r1: arena) -> i64
     r2 = ARENA_ALLOC r1, [i64; 8]
     RET
 endfunc
@@ -358,7 +362,7 @@ never outlive the region it points into.
 ```
 program    := { top }
 top        := function | structdef | enumdef
-function   := [ "inline" ] "func" ident [ "(" params ")" ] [ "->" type ] { instruction } "endfunc"
+function   := [ "inline" ] "func" ident [ "(" params ")" ] "->" type { instruction } "endfunc"
 structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
 enumdef    := "enum" ident { variant } "endenum"
 field      := ident ":" type
@@ -367,9 +371,9 @@ variant    := ident [ "(" { field } ")" ]
 
 **(draft)** The grammar above is being formalized. Until the first `func`
 appears, a program may also be written without any function declaration, in
-which case the whole program is the entry function `main`. Every block is
-closed by an explicit terminator keyword; there is no brace or indentation
-syntax, and indentation is not significant.
+which case the whole program is the entry function `main` (returning `i64`).
+Every block is closed by an explicit terminator keyword; there is no brace or
+indentation syntax, and indentation is not significant.
 
 ## 9. Structs
 
@@ -422,7 +426,7 @@ A struct layout travels in a `ptr(Struct)` parameter, so the callee can read
 and write the fields:
 
 ```
-func read(r1: ptr(Node))
+func read(r1: ptr(Node)) -> i64
     r2 = r1.next
     r0 = LOAD [r2]
     RET r0
