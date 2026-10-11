@@ -345,22 +345,33 @@ Rejected programs include:
 Errors carry the source line, which lets a generating LLM be fed back in a
 *self-healing* loop.
 
+## Install
+
+Requires Go 1.26+ and, for `arcc build` (assemble/link/run), a C compiler
+(`cc`) on the `PATH`.
+
+```bash
+# Install the CLI into $(go env GOPATH)/bin
+go install github.com/quartzo/arc-ir/cmd/arcc@latest
+
+# ...or build from a checkout
+go build -o arcc ./cmd/arcc
+```
+
 ## Usage
 
 ```bash
-go build -o arcc ./cmd/arcc
-
 # Verify without generating code
-./arcc verify examples/loop.arc
+arcc verify examples/loop.arc
 
 # Show the generated x86_64 assembly
-./arcc emit-asm examples/loop.arc
+arcc emit-asm examples/loop.arc
 
 # Generate assembly, assemble, link with the runtime, and run
-./arcc build examples/loop.arc -run
+arcc build examples/loop.arc -run
 ```
 
-Output of `./arcc build examples/loop.arc -run`:
+Output of `arcc build examples/loop.arc -run`:
 
 ```
 wrote loop.s and arc_runtime.c
