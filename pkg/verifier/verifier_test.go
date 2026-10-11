@@ -396,6 +396,39 @@ func TestVerifyArenaMerge(t *testing.T) {
 	}
 }
 
+func TestVerifyReturnedStructField(t *testing.T) {
+	// A pointer to a struct returned from a call keeps its layout, so the
+	// caller can read a nested pointer field and then a field behind it. The
+	// returned pointer has no seeded cells, so the field type has to come from
+	// the declared layout.
+	src := "struct Node\n" +
+		"    next: ptr(Node)\n" +
+		"    val: i64\n" +
+		"endstruct\n" +
+		"func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r1 = s0\n" +
+		"    CALL make\n" +
+		"    r2 = r0.next\n" +
+		"    r3 = r2.val\n" +
+		"    PRINT r3\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func make(r1: arena) -> ptr(Node)\n" +
+		"    r0 = ARENA_ALLOC r1, Node\n" +
+		"    r3 = ARENA_ALLOC r1, Node\n" +
+		"    r4 = 7\n" +
+		"    r3.val = r4\n" +
+		"    r5 = 9\n" +
+		"    r0.val = r5\n" +
+		"    r0.next = r3\n" +
+		"    RET r0\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, src)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
 func TestVerifyNonScalarReturns(t *testing.T) {
 	// A pointer into a caller-owned region can be returned: the region outlives
 	// the call.

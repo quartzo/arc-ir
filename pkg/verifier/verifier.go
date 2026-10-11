@@ -691,6 +691,14 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				st.Regs[inst.Dst] = loadFromCell(cell)
 				return nil
 			}
+			// No cell: a foreign pointer (e.g. one returned from a call) has no
+			// seeded fields. Fall back to the declared layout, exactly as
+			// accessType did, so a nested pointer field keeps its struct type
+			// instead of decaying to an untyped pointer.
+			if f := structFieldAt(v.mod, ptr.Struct, inst.Mem.Offset); f != nil {
+				st.Regs[inst.Dst] = fieldState(f)
+				return nil
+			}
 		}
 		lo, hi := intRange(rt)
 		st.Regs[inst.Dst] = RegState{Defined: true, Type: rt, RefID: -1, AllocID: -1, Min: lo, Max: hi}
