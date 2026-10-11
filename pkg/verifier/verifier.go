@@ -310,8 +310,12 @@ func Verify(prog *ir.Program) (*Result, error) {
 		return nil, err
 	}
 
-	res := &Result{Funcs: len(m.Funcs), Module: m}
+	res := &Result{Module: m}
 	for _, f := range m.Funcs {
+		if f.Extern {
+			continue
+		}
+		res.Funcs++
 		v := &Verifier{mod: m, f: f, in: make([]*State, len(f.Blocks))}
 		v.assignIDs()
 		entry, err := v.entryState()
@@ -893,10 +897,17 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			}
 			switch p.Kind {
 			case ir.KindScalar:
-				if !isInt(rs.Type) {
+				if p.Scalar.Float() {
+					if !isFloat(rs.Type) {
+						return v.errf(inst, "argument %s to %s: expected a float, got %s", p.Reg, callee.Name, rs.Type)
+					}
+				} else if !isInt(rs.Type) {
 					return v.errf(inst, "argument %s to %s: expected an integer, got %s", p.Reg, callee.Name, rs.Type)
 				}
 			case ir.KindArena:
+				if callee.Extern {
+					return v.errf(inst, "argument %s to %s: an extern function cannot take an arena", p.Reg, callee.Name)
+				}
 				if rs.Type != TypeArena {
 					return v.errf(inst, "argument %s to %s: expected arena, got %s", p.Reg, callee.Name, rs.Type)
 				}
@@ -932,7 +943,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 							}
 						}
 					}
-				} else if rs.AllocSize < p.Size {
+				} else if !callee.Extern && rs.AllocSize < p.Size {
 					return v.errf(inst, "argument %s to %s: %d-byte allocation is smaller than the required %d bytes",
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
 				}
@@ -982,8 +993,22 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			st.Regs[r] = RegState{Clobbered: true}
 		}
 		// The return value is delivered in r0 with the callee's declared type.
-		switch callee.RetKind {
-		case ir.KindPtr:
+		switch {
+		case callee.RetVoid:
+			// A void foreign function defines nothing: r0 is clobbered.
+			st.Regs[0] = RegState{Clobbered: true}
+		case callee.Extern && callee.RetKind == ir.KindScalar && callee.RetScalar.Float():
+			// A float result comes back in xmm0, which maps to v0; the scratch
+			// integer result register r0 is clobbered.
+			t := scalarRegType(callee.RetScalar)
+			st.Regs[ir.NumGP] = RegState{Defined: true, Type: t, RefID: -1, AllocID: -1}
+			st.Regs[0] = RegState{Clobbered: true}
+		case callee.Extern && callee.RetKind == ir.KindPtr:
+			// A pointer from foreign code has unknown provenance and unknown
+			// extent: it is an opaque token. Any load through it is rejected
+			// (AllocSize 0); it may still be passed back to another extern.
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, AllocSize: 0, Variant: -1}
+		case callee.RetKind == ir.KindPtr:
 			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: retRef, AllocID: -1, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
 		default:
 			t := scalarRegType(callee.RetScalar)

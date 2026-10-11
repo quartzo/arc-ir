@@ -57,6 +57,81 @@ func TestVerifyStraightLine(t *testing.T) {
 	}
 }
 
+func TestVerifyExtern(t *testing.T) {
+	// A well-typed program with an integer pointer argument, a void foreign
+	// function, and a scalar return.
+	ok := "extern \"puts\" func puts(r1: ptr([u8; 8])) -> i64\n" +
+		"extern \"getpid\" func getpid() -> i64\n" +
+		"extern \"nop\" func nop() -> void\n" +
+		"func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r1 = ARENA_ALLOC s0, [u8; 8]\n" +
+		"    CALL puts\n" +
+		"    CALL getpid\n" +
+		"    PRINT r0\n" +
+		"    CALL nop\n" +
+		"    RET\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, ok)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	// An opaque pointer returned by one foreign call may flow to another.
+	flow := "extern \"malloc\" func xmalloc(r1: i64) -> ptr([u8; 1])\n" +
+		"extern \"free\" func xfree(r1: ptr([u8; 1])) -> void\n" +
+		"func main -> i64\n" +
+		"    r1 = 16\n" +
+		"    CALL xmalloc\n" +
+		"    r1 = r0\n" +
+		"    CALL xfree\n" +
+		"    RET\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, flow)); err != nil {
+		t.Fatalf("opaque pointer flow should verify, got %v", err)
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"load through opaque return", "extern \"malloc\" func xmalloc(r1: i64) -> ptr([u8; 1])\n" +
+			"func main -> i64\n" +
+			"    r1 = 16\n" +
+			"    CALL xmalloc\n" +
+			"    r2 = LOAD [r0]\n" +
+			"    RET\n" +
+			"endfunc\n", "pointer has no type"},
+		{"scalar where pointer expected", "extern func f(r1: ptr([u8; 8])) -> i64\n" +
+			"func main -> i64\n" +
+			"    r1 = 5\n" +
+			"    CALL f\n" +
+			"    RET\n" +
+			"endfunc\n", "expected a data pointer"},
+		{"undefined argument", "extern func f(r1: i64) -> i64\n" +
+			"func main -> i64\n" +
+			"    CALL f\n" +
+			"    RET\n" +
+			"endfunc\n", "uninitialized register"},
+		{"extern with a body", "extern func f(r1: i64) -> i64\n" +
+			"    RET\n" +
+			"func main -> i64\n" +
+			"    RET\n" +
+			"endfunc\n", "must not have a body"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil {
+				t.Fatalf("expected error containing %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestVerifyRejections(t *testing.T) {
 	cases := []struct {
 		name string

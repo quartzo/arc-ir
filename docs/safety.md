@@ -43,6 +43,30 @@ guarantee. It is **not complete**: it may reject a program that is in fact
 safe. A rejection means "cannot prove", not "unsafe". Soundness is the
 contract; completeness is best-effort.
 
+## Foreign functions (FFI)
+
+An `extern` declaration (see [`assembly.md`](assembly.md) §6.1) calls a function
+that is not verified — its body is foreign C code. The verifier checks the call
+site against the declared signature and applies that signature's effect (scratch
+and vector registers are destroyed, the result gets the declared type, pointed-to
+cells are invalidated), but it **cannot** see the callee's body.
+
+Therefore the guarantee above holds for a program that uses `extern` only under
+an added assumption:
+
+> every foreign function obeys its declared signature, does not retain a
+> pointer past the return of the call, and reads and writes only within the
+> regions it is passed.
+
+This is the same trust already placed in the runtime, but at an open boundary
+rather than a fixed one. A program with no `extern` declaration is unaffected:
+for it the guarantee is unconditional. A foreign function that violates the
+assumption can cause undefined behaviour the verifier will not catch.
+
+A pointer returned by a foreign function has unknown provenance and extent. It
+is tracked as an **opaque token**: ARC may not load or store through it, but may
+pass it back to another foreign function.
+
 ## What is NOT guaranteed
 
 - **Termination.** The verifier proves memory safety, not that the program

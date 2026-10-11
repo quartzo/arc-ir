@@ -27,7 +27,10 @@ type Function struct {
 	Succs     [][]int
 	Preds     [][]int
 	IsEntry   bool
-	Inline    bool // the backend inlines every call to this function
+	Inline    bool   // the backend inlines every call to this function
+	Extern    bool   // a declared-only foreign (C) function: no body
+	Symbol    string // Extern: the linked symbol
+	RetVoid   bool   // Extern: the foreign function returns no value
 
 	instrs []Instruction
 }
@@ -58,7 +61,10 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, RetReg: r.retReg, Index: map[string]int{}, Inline: r.inline, instrs: r.instrs}
+		if r.extern && len(r.instrs) > 0 {
+			return nil, lineErr(r.instrs[0].Line, fmt.Errorf("extern function %q must not have a body", r.name))
+		}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, RetReg: r.retReg, Index: map[string]int{}, Inline: r.inline, Extern: r.extern, Symbol: r.symbol, RetVoid: r.retVoid, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -73,9 +79,15 @@ func BuildModule(p *Program) (*Module, error) {
 	} else {
 		return nil, fmt.Errorf("no entry function: expected a function named %q", "main")
 	}
+	if m.Entry.Extern {
+		return nil, fmt.Errorf("no entry function: %q is an extern declaration", m.Entry.Name)
+	}
 	m.Entry.IsEntry = true
 
 	for _, f := range m.Funcs {
+		if f.Extern {
+			continue
+		}
 		if err := buildBlocks(f); err != nil {
 			return nil, err
 		}
@@ -107,6 +119,9 @@ type rawFunc struct {
 	retCount  int64
 	retReg    Register
 	inline    bool
+	extern    bool
+	symbol    string
+	retVoid   bool
 	instrs    []Instruction
 }
 
@@ -128,6 +143,9 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 				retCount:  inst.RetCount,
 				retReg:    inst.RetReg,
 				inline:    inst.Inline,
+				extern:    inst.Extern,
+				symbol:    inst.Symbol,
+				retVoid:   inst.RetVoid,
 			})
 			cur = len(funcs) - 1
 			continue

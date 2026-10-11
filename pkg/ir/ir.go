@@ -465,6 +465,14 @@ type Instruction struct {
 	// every call site.
 	Inline bool
 
+	// Extern marks a function (OpFunc only) that is declared but not defined in
+	// ARC: its body is a foreign (C) function, called through the System V
+	// AMD64 ABI. Symbol is the linked symbol; RetVoid marks a foreign function
+	// that returns no value.
+	Extern  bool
+	Symbol  string
+	RetVoid bool
+
 	// Line is the 1-based source line, attached by the parser.
 	Line int
 }
@@ -488,7 +496,15 @@ func (i Instruction) String() string {
 	case OpLabel:
 		return i.Label + ":"
 	case OpFunc:
-		return fmt.Sprintf("func %s(%s)%s:", i.Label, formatParams(i.Params), formatRet(i))
+		kw := "func"
+		if i.Extern {
+			kw = fmt.Sprintf("extern %q func", i.Symbol)
+		}
+		ret := formatRet(i)
+		if i.RetVoid {
+			ret = " -> void"
+		}
+		return fmt.Sprintf("%s %s(%s)%s:", kw, i.Label, formatParams(i.Params), ret)
 	case OpCall:
 		return fmt.Sprintf("CALL %s", i.Label)
 	case OpMov:

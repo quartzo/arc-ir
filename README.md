@@ -53,6 +53,7 @@ verification and code generation stay simple and direct.
 | — | Register blocks: scratch `r0..r31` (volatile) and preserved `s0..s31` (callee-saved) | ✅ |
 | — | Physical/area mapping: physical registers + fixed area via a reserved base register | ✅ |
 | — | Inlining: `inline func` expanded at each call site (no preserved registers, non-recursive) | ✅ |
+| — | FFI: `extern` declarations, called through the System V AMD64 ABI | ✅ |
 
 ## Layout
 

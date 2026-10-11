@@ -170,6 +170,36 @@ func TestParseInline(t *testing.T) {
 	}
 }
 
+func TestParseExtern(t *testing.T) {
+	prog, err := Parse("extern \"puts\" func my_puts(r1: ptr([u8; 16])) -> i64\n" +
+		"extern func getpid() -> i64\n" +
+		"extern func scale(v0: f64, r1: i64) -> f64\n" +
+		"extern func nop() -> void\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	puts := prog.Instrs[0]
+	if !puts.Extern || puts.Symbol != "puts" || puts.Label != "my_puts" {
+		t.Errorf("extern decl = %+v", puts)
+	}
+	if p := puts.Params[0]; p.Kind != ir.KindPtr || p.Size != 16 {
+		t.Errorf("extern ptr param = %+v", p)
+	}
+	if g := prog.Instrs[1]; !g.Extern || g.Symbol != "getpid" {
+		t.Errorf("extern getpid = %+v", g)
+	}
+	scale := prog.Instrs[2]
+	if !scale.Extern || scale.RetKind != ir.KindScalar || scale.RetScalar != ir.F64 {
+		t.Errorf("extern scale return = %+v", scale)
+	}
+	if p := scale.Params[0]; !p.Scalar.Float() || !p.Reg.IsVec() {
+		t.Errorf("extern float param = %+v", p)
+	}
+	if n := prog.Instrs[3]; !n.Extern || !n.RetVoid {
+		t.Errorf("extern void return = %+v", n)
+	}
+}
+
 func TestParseArenaParam(t *testing.T) {
 	prog, err := Parse("func f(r1: arena, r2: ptr([i64; 8])) -> i64\n" +
 		"    RET\n" +
@@ -484,6 +514,12 @@ func TestParseErrors(t *testing.T) {
 		{"mismatched endstruct", "func f -> i64\n    RET\nendstruct\n", "cannot close"},
 		{"nested func", "func f -> i64\n    func g\nendfunc\n", "cannot start inside"},
 		{"trailing after endfunc", "func f -> i64\n    RET\nendfunc now\n", "unexpected token"},
+		{"extern float param on gp", "extern func f(r1: f64) -> i64\n", "must be a vector register"},
+		{"extern int param on vector", "extern func f(v0: i64) -> i64\n", "general-purpose register"},
+		{"extern arena param", "extern func f(r1: arena) -> i64\n", "may not take an arena"},
+		{"extern stack param", "extern func f(r1: stack(64)) -> i64\n", "may not take an arena"},
+		{"extern region ptr return", "extern func f(r1: ptr([u8; 4])) -> r1: ptr([u8; 4])\n", "must not name a region parameter"},
+		{"extern missing func", "extern \"puts\" count\n", "expected `func` after `extern`"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

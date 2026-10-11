@@ -596,3 +596,107 @@ func TestCompileAndRun(t *testing.T) {
 		})
 	}
 }
+
+// ffiHelpers are C functions the extern tests link against, exercising integer,
+// six-argument, mixed integer/float and pointer (string) calls.
+const ffiHelpers = `
+long ffi_add3(long a, long b, long c) { return a + b + c; }
+long ffi_sum6(long a, long b, long c, long d, long e, long f) {
+    return a + b + c + d + e + f;
+}
+double ffi_mix(long a, double b) { return (double)a + b; }
+long ffi_strlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
+`
+
+// TestCompileAndRunExtern compiles and runs programs that call foreign (C)
+// functions through the System V AMD64 ABI.
+func TestCompileAndRunExtern(t *testing.T) {
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skip("no C compiler/assembler available")
+	}
+
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"int", "extern \"ffi_add3\" func add3(r1: i64, r2: i64, r3: i64) -> i64\n" +
+			"func main -> i64\n" +
+			"    r1 = 10\n" +
+			"    r2 = 20\n" +
+			"    r3 = 12\n" +
+			"    CALL add3\n" +
+			"    PRINT r0\n" +
+			"    RET r0\n" +
+			"endfunc\n", "42"},
+		{"six_args", "extern \"ffi_sum6\" func sum6(r1: i64, r2: i64, r3: i64, r4: i64, r5: i64, r6: i64) -> i64\n" +
+			"func main -> i64\n" +
+			"    r1 = 1\n" +
+			"    r2 = 2\n" +
+			"    r3 = 3\n" +
+			"    r4 = 4\n" +
+			"    r5 = 5\n" +
+			"    r6 = 6\n" +
+			"    CALL sum6\n" +
+			"    PRINT r0\n" +
+			"    RET r0\n" +
+			"endfunc\n", "21"},
+		{"mixed_float", "extern \"ffi_mix\" func mix(r1: i64, v0: f64) -> f64\n" +
+			"func main -> i64\n" +
+			"    r1 = 3\n" +
+			"    v0 = 2.5\n" +
+			"    CALL mix\n" +
+			"    PRINTF v0\n" +
+			"    RET\n" +
+			"endfunc\n", "5.5"},
+		{"ptr_string", "extern \"ffi_strlen\" func strlen(r1: ptr([u8; 16])) -> i64\n" +
+			"func main -> i64\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 16\n" +
+			"    r1 = ARENA_ALLOC s0, [u8; 16]\n" +
+			"    r2 = 72\n" +
+			"    STORE [r1], r2\n" +
+			"    r3 = 105\n" +
+			"    STORE [r1 + 1], r3\n" +
+			"    r4 = 0\n" +
+			"    STORE [r1 + 2], r4\n" +
+			"    CALL strlen\n" +
+			"    PRINT r0\n" +
+			"    RET r0\n" +
+			"endfunc\n", "2"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			asm := buildAsm(t, tc.src)
+			dir := t.TempDir()
+			asmPath := filepath.Join(dir, "prog.s")
+			rtPath := filepath.Join(dir, runtime.SourceName)
+			helpPath := filepath.Join(dir, "ffi_helpers.c")
+			if err := os.WriteFile(asmPath, []byte(asm), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rtPath, []byte(runtime.Source), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(helpPath, []byte(ffiHelpers), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			bin := filepath.Join(dir, "prog")
+			if out, err := exec.Command(cc, "-O2", "-o", bin, asmPath, rtPath, helpPath).CombinedOutput(); err != nil {
+				t.Fatalf("cc failed: %v\n%s", err, out)
+			}
+
+			out, err := exec.Command(bin).CombinedOutput()
+			if err != nil {
+				var ee *exec.ExitError
+				if !errors.As(err, &ee) {
+					t.Fatalf("run failed: %v\n%s", err, out)
+				}
+			}
+			if got := strings.TrimSpace(string(out)); got != tc.want {
+				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

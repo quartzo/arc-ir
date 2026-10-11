@@ -40,6 +40,13 @@ var xmmRegs = []string{
 	"%xmm8", "%xmm9", "%xmm10", "%xmm11", "%xmm12", "%xmm13",
 }
 
+// System V AMD64 argument registers, in order: integer/pointer arguments use
+// the GP list, floating-point arguments the XMM list.
+var (
+	abiIntArgRegs = []string{"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"}
+	abiXmmArgRegs = []string{"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"}
+)
+
 const (
 	scratch1    = "%r10"
 	scratch2    = "%r11"
@@ -92,7 +99,7 @@ func (x *x64) assignGlobals() {
 	var gp, vec []ir.Register
 	seen := map[ir.Register]bool{}
 	for _, f := range x.mod.Funcs {
-		funcRegs(f, func(r ir.Register) {
+		x.funcRegs(f, func(r ir.Register) {
 			if r.Valid() && !seen[r] {
 				seen[r] = true
 				if r.IsVec() {
@@ -132,16 +139,19 @@ func (x *x64) assignGlobals() {
 	}
 
 	for _, f := range x.mod.Funcs {
-		if f.IsEntry {
+		switch {
+		case f.Extern:
+			x.symbol[f.Name] = sanitize(f.Symbol)
+		case f.IsEntry:
 			x.symbol[f.Name] = "main"
-		} else {
+		default:
 			x.symbol[f.Name] = ".Lfunc_" + sanitize(f.Name)
 		}
 	}
 }
 
 // funcRegs visits every register referenced by a function.
-func funcRegs(f *ir.Function, fn func(ir.Register)) {
+func (x *x64) funcRegs(f *ir.Function, fn func(ir.Register)) {
 	for _, b := range f.Blocks {
 		for _, inst := range b.Instrs {
 			if inst.Op == ir.OpLabel {
@@ -158,6 +168,11 @@ func funcRegs(f *ir.Function, fn func(ir.Register)) {
 				fn(inst.Mem.Index)
 			case ir.OpCall:
 				fn(0) // return value register
+				// A float-returning extern delivers its result in xmm0 (v0).
+				if callee := x.mod.ByName[inst.Label]; callee != nil && callee.Extern &&
+					callee.RetKind == ir.KindScalar && callee.RetScalar.Float() {
+					fn(ir.Register(ir.NumGP))
+				}
 			}
 		}
 	}
@@ -166,6 +181,9 @@ func funcRegs(f *ir.Function, fn func(ir.Register)) {
 func (x *x64) emit() (string, error) {
 	x.line(".text")
 	for _, f := range x.mod.Funcs {
+		if f.Extern {
+			continue
+		}
 		if err := x.emitFunc(f); err != nil {
 			return "", err
 		}
@@ -243,7 +261,7 @@ func (x *x64) emitFunc(f *ir.Function) error {
 func (x *x64) prepare(f *ir.Function) {
 	seen := map[ir.Register]bool{}
 	var used []ir.Register
-	funcRegs(f, func(r ir.Register) {
+	x.funcRegs(f, func(r ir.Register) {
 		if r.Valid() && !seen[r] {
 			seen[r] = true
 			used = append(used, r)
@@ -395,6 +413,9 @@ func (x *x64) inst(inst *ir.Instruction) error {
 		x.restoreAll()
 
 	case ir.OpCall:
+		if callee := x.mod.ByName[inst.Label]; callee != nil && callee.Extern {
+			return x.emitExternCall(callee)
+		}
 		x.line("\tcall %s", x.symbol[inst.Label])
 		x.line("\tmovq %%rax, %s", scratch2)
 		x.store(scratch2, 0) // return value in r0
@@ -711,6 +732,56 @@ func (x *x64) restoreAll() {
 			x.line("\tmovq %d(%s), %s", areaOff(r), areaBase, phys)
 		}
 	}
+}
+
+// emitExternCall lowers a call to a foreign (C) function through the System V
+// AMD64 ABI. It spills every physical register to its canonical storage
+// (saveAll), marshals the arguments into the ABI registers reading from that
+// storage — never from the physical homes, which overlap the ABI argument
+// registers — calls the symbol, and delivers the result to r0 (integer or
+// pointer) or v0 (float). saveAll/restoreAll is required because an ARC
+// preserved register may live in %r9, which the C ABI does not preserve.
+func (x *x64) emitExternCall(callee *ir.Function) error {
+	x.saveAll()
+	gi, si := 0, 0
+	for _, p := range callee.Params {
+		if p.Kind == ir.KindScalar && p.Scalar.Float() {
+			if si >= len(abiXmmArgRegs) {
+				return fmt.Errorf("extern %s: more than %d float arguments are not supported", callee.Name, len(abiXmmArgRegs))
+			}
+			mnem := "movsd"
+			if p.Scalar == ir.F32 {
+				mnem = "movss"
+			}
+			x.line("\t%s %d(%%rsp), %s", mnem, x.slot[p.Reg], abiXmmArgRegs[si])
+			si++
+			continue
+		}
+		if gi >= len(abiIntArgRegs) {
+			return fmt.Errorf("extern %s: more than %d integer arguments are not supported (no stack arguments yet)", callee.Name, len(abiIntArgRegs))
+		}
+		x.line("\tmovq %d(%s), %s", areaOff(p.Reg), areaBase, abiIntArgRegs[gi])
+		gi++
+	}
+	x.line("\tcall %s", x.symbol[callee.Name])
+	switch {
+	case callee.RetVoid:
+		x.restoreAll()
+	case callee.RetKind == ir.KindScalar && callee.RetScalar.Float():
+		// Capture xmm0 before restoreAll reloads the vector homes.
+		mnem := "movsd"
+		if callee.RetScalar == ir.F32 {
+			mnem = "movss"
+		}
+		x.line("\t%s %%xmm0, %s", mnem, xmmScratch1)
+		x.restoreAll()
+		x.store(xmmScratch1, ir.Register(ir.NumGP)) // result in v0
+	default:
+		x.line("\tmovq %%rax, %s", scratch2)
+		x.restoreAll()
+		x.store(scratch2, 0) // result in r0
+	}
+	return nil
 }
 
 func (x *x64) line(format string, args ...any) {

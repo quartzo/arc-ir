@@ -347,6 +347,59 @@ as the function that creates it.
 A program with no `func` declaration is treated as a single entry function
 named `main` returning `i64`.
 
+### 6.1 Foreign functions (FFI)
+
+An `extern` declaration names a function that is **not** defined in ARC. It has
+no body and no `endfunc`; the verifier trusts its typed signature as a *contract*
+(see the note in [`safety.md`](safety.md)), and the backend calls the linked
+symbol through the **System V AMD64 ABI**:
+
+```
+extern func puts(r1: ptr([u8; 16])) -> i64
+extern "getpid" func pid() -> i64          ; rename the linked symbol
+extern func scale(v0: f64, r1: i64) -> f64
+extern func nop() -> void
+```
+
+Without a string, the ARC name is the symbol; the optional `"sym"` renames it.
+
+Arguments are classified by their declared type, **in declaration order**, with
+two independent sequences — exactly as the ABI requires:
+
+| Declared type | ARC register (what the caller fills) | C argument register |
+|---------------|--------------------------------------|---------------------|
+| integer / `ptr(...)` | any `rN` | `%rdi`, `%rsi`, `%rdx`, `%rcx`, `%r8`, `%r9` |
+| `f32` / `f64` | a `vN` (vector register) | `%xmm0` … `%xmm7` |
+
+A float parameter must be a vector register and an integer or pointer parameter a
+general-purpose register. Up to six integer/pointer and eight float arguments are
+supported (argument passing on the stack is not implemented yet). An extern
+function may **not** take an `arena` or `stack(...)` parameter: foreign code
+cannot allocate from an ARC arena.
+
+The return type may be an integer (`r0`), a pointer (`r0`), a float (`v0`), or
+`void` (`r0` is clobbered). A pointer returned by foreign code has unknown
+provenance and extent, so it is an **opaque token**: it cannot be loaded through
+by ARC, but it may be passed back to another extern function.
+
+```
+extern "malloc" func xmalloc(r1: i64) -> ptr([u8; 1])
+extern "free" func xfree(r1: ptr([u8; 1])) -> void
+
+func main -> i64
+    r1 = 64
+    CALL xmalloc
+    r1 = r0
+    CALL xfree
+    RET
+endfunc
+```
+
+The verifier applies the call's effect without a body: scratch and vector
+registers are destroyed, the result register receives the declared type, and the
+typed cells of any pointed-to argument are invalidated (the foreign function may
+have written through it). `examples/extern.arc` is a runnable example.
+
 ## 7. Regions and lifetime
 
 A region is **function-scoped**: it lives at most as long as the function that

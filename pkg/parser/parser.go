@@ -144,8 +144,14 @@ func Parse(src string) (*ir.Program, error) {
 				}
 				curEnum = e
 				state, openLine = blockEnum, lineNo
+			case head == "extern":
+				inst, err := parseExtern(toks, lineNo)
+				if err != nil {
+					return nil, err
+				}
+				prog.Instrs = append(prog.Instrs, inst)
 			case head == "func":
-				inst, err := parseFunc(toks, lineNo)
+				inst, err := parseFunc(toks, lineNo, false)
 				if err != nil {
 					return nil, err
 				}
@@ -155,7 +161,7 @@ func Parse(src string) (*ir.Program, error) {
 				if len(toks) < 2 || toks[1] != "func" {
 					return nil, fmt.Errorf("line %d: expected `inline func`", lineNo)
 				}
-				inst, err := parseFunc(toks[1:], lineNo)
+				inst, err := parseFunc(toks[1:], lineNo, false)
 				if err != nil {
 					return nil, err
 				}
@@ -535,7 +541,7 @@ func stripComment(line string) string {
 func tokenize(line string) ([]string, error) {
 	var s scanner.Scanner
 	s.Init(strings.NewReader(line))
-	s.Mode = scanner.ScanIdents | scanner.ScanInts | scanner.ScanFloats
+	s.Mode = scanner.ScanIdents | scanner.ScanInts | scanner.ScanFloats | scanner.ScanStrings
 	s.Whitespace = 1<<'\t' | 1<<'\r' | 1<<' '
 	s.IsIdentRune = func(ch rune, i int) bool {
 		return ch == '_' || ch == '.' || unicode.IsLetter(ch) || unicode.IsDigit(ch)
@@ -745,9 +751,48 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	return inst, nil
 }
 
+// parseExtern parses an external (FFI) function declaration:
+//
+//	extern func puts(r1: ptr([u8; 16])) -> i64
+//	extern "getpid" func pid() -> i64
+//
+// The optional string before `func` renames the linked symbol; without it the
+// ARC name is used as the symbol.
+func parseExtern(toks []string, lineNo int) (ir.Instruction, error) {
+	c := &cursor{toks: toks, line: lineNo}
+	c.pos = 1 // skip "extern"
+
+	symbol := ""
+	if c.more() && strings.HasPrefix(c.peek(), "\"") {
+		lit := c.peek()
+		s, err := strconv.Unquote(lit)
+		if err != nil {
+			return ir.Instruction{}, fmt.Errorf("line %d: bad symbol literal %s", lineNo, lit)
+		}
+		symbol = s
+		c.pos++
+	}
+	if c.peek() != "func" {
+		return ir.Instruction{}, fmt.Errorf("line %d: expected `func` after `extern`", lineNo)
+	}
+	inst, err := parseFunc(toks[c.pos:], lineNo, true)
+	if err != nil {
+		return ir.Instruction{}, err
+	}
+	if symbol == "" {
+		symbol = inst.Label
+	}
+	inst.Extern = true
+	inst.Symbol = symbol
+	return inst, nil
+}
+
 // parseFunc parses "func name(param: type, ...)" (the block is closed by
-// "endfunc"). A return type is required and follows as "-> type".
-func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
+// "endfunc"). A return type is required and follows as "-> type". When extern
+// is true the declaration is a foreign (C) function: float parameters and float
+// or void returns are allowed, the body is absent, and a pointer return need not
+// name a region parameter.
+func parseFunc(toks []string, lineNo int, extern bool) (ir.Instruction, error) {
 	c := &cursor{toks: toks, line: lineNo}
 	c.pos = 1 // skip "func"
 
@@ -778,7 +823,17 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 				return ir.Instruction{}, err
 			}
 			if spec.kind == ir.KindScalar && spec.scalar.Float() {
-				return ir.Instruction{}, fmt.Errorf("line %d: float parameters are not supported (pass a ptr instead)", lineNo)
+				if !extern {
+					return ir.Instruction{}, fmt.Errorf("line %d: float parameters are not supported (pass a ptr instead)", lineNo)
+				}
+				if !reg.IsVec() {
+					return ir.Instruction{}, fmt.Errorf("line %d: a float parameter must be a vector register (v0..v15)", lineNo)
+				}
+			} else if extern && reg.IsVec() {
+				return ir.Instruction{}, fmt.Errorf("line %d: an integer or pointer parameter must be a general-purpose register", lineNo)
+			}
+			if extern && spec.kind == ir.KindArena {
+				return ir.Instruction{}, fmt.Errorf("line %d: an extern function may not take an arena or stack parameter (it cannot allocate from an ARC arena)", lineNo)
 			}
 			param := ir.Param{
 				Reg:    reg,
@@ -806,6 +861,15 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 		return ir.Instruction{}, fmt.Errorf("line %d: function %s must declare a return type, e.g. \"-> i64\"", lineNo, name)
 	}
 	c.pos += 2
+	// A foreign function may return nothing: "-> void".
+	if extern && c.peek() == "void" {
+		c.pos++
+		inst.RetVoid = true
+		if err := noTrailing(c); err != nil {
+			return ir.Instruction{}, err
+		}
+		return inst, nil
+	}
 	// A pointer return names the parameter whose region it lives in:
 	// "-> r1: ptr(...)". The region parameter is written as a register (the
 	// parameter identity), not as a separate name.
@@ -824,18 +888,22 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 	if err != nil {
 		return ir.Instruction{}, err
 	}
-	if spec.kind == ir.KindScalar && spec.scalar.Float() {
+	if spec.kind == ir.KindScalar && spec.scalar.Float() && !extern {
 		return ir.Instruction{}, fmt.Errorf("line %d: float return types are not supported", lineNo)
 	}
 	if spec.kind == ir.KindArena {
 		return ir.Instruction{}, fmt.Errorf("line %d: an arena cannot be returned: a region lives only as long as the function that creates it (pass a region down instead)", lineNo)
 	}
 	if spec.kind == ir.KindPtr {
-		if !retReg.Valid() {
-			return ir.Instruction{}, fmt.Errorf("line %d: a pointer return must name its region parameter, e.g. \"-> r1: ptr(...)\"", lineNo)
-		}
-		if !isRegionParam(inst.Params, retReg) {
-			return ir.Instruction{}, fmt.Errorf("line %d: return region %s is not an arena or pointer parameter", lineNo, retReg)
+		if !extern {
+			if !retReg.Valid() {
+				return ir.Instruction{}, fmt.Errorf("line %d: a pointer return must name its region parameter, e.g. \"-> r1: ptr(...)\"", lineNo)
+			}
+			if !isRegionParam(inst.Params, retReg) {
+				return ir.Instruction{}, fmt.Errorf("line %d: return region %s is not an arena or pointer parameter", lineNo, retReg)
+			}
+		} else if retReg.Valid() {
+			return ir.Instruction{}, fmt.Errorf("line %d: an extern pointer return must not name a region parameter", lineNo)
 		}
 	} else if retReg.Valid() {
 		return ir.Instruction{}, fmt.Errorf("line %d: only a pointer return may name a region parameter", lineNo)
