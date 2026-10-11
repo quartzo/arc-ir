@@ -1418,6 +1418,76 @@ func TestVerifyErrorLine(t *testing.T) {
 	}
 }
 
+// TestVerifyMergeProvenance checks that a reference whose arena identity is lost
+// at a control-flow join is treated as possibly aliasing any arena: releasing
+// one of the candidate arenas invalidates it. Without this, a use-after-free
+// slips through the merge.
+func TestVerifyMergeProvenance(t *testing.T) {
+	rejected := []struct {
+		name string
+		src  string
+	}{
+		{"data pointer", "func main\n" +
+			"    r5 = 0\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    s1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    JGT r5, 0, other\n" +
+			"    r6 = ARENA_ALLOC s0, [i64; 8]\n" +
+			"    JMP join\n" +
+			"other:\n" +
+			"    r6 = ARENA_ALLOC s1, [i64; 8]\n" +
+			"join:\n" +
+			"    ARENA_DESTROY s0\n" +
+			"    r7 = LOAD [r6]\n" +
+			"    ARENA_DESTROY s1\n" +
+			"    RET r7\n" +
+			"endfunc\n"},
+		{"arena handle", "func main\n" +
+			"    r5 = 0\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    s1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    JGT r5, 0, other\n" +
+			"    s2 = s0\n" +
+			"    JMP join\n" +
+			"other:\n" +
+			"    s2 = s1\n" +
+			"join:\n" +
+			"    ARENA_DESTROY s0\n" +
+			"    r3 = ARENA_ALLOC s2, [i64; 8]\n" +
+			"    ARENA_DESTROY s1\n" +
+			"    RET\n" +
+			"endfunc\n"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Verify(mustParse(t, tc.src))
+			if err == nil || !strings.Contains(err.Error(), "destroyed") {
+				t.Fatalf("expected a use-after-destroy error, got %v", err)
+			}
+		})
+	}
+
+	// Using a merged pointer before any release is still accepted.
+	ok := "func main\n" +
+		"    r5 = 0\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    s1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    JGT r5, 0, other\n" +
+		"    r6 = ARENA_ALLOC s0, [i64; 8]\n" +
+		"    JMP join\n" +
+		"other:\n" +
+		"    r6 = ARENA_ALLOC s1, [i64; 8]\n" +
+		"join:\n" +
+		"    r7 = LOAD [r6]\n" +
+		"    ARENA_DESTROY s0\n" +
+		"    ARENA_DESTROY s1\n" +
+		"    RET r7\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, ok)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
 // TestExamples verifies every program in examples/: the invalid_* programs must
 // be rejected and all others accepted.
 func TestExamples(t *testing.T) {

@@ -193,7 +193,7 @@ type RegState struct {
 	Defined   bool
 	Type      RegType
 	Min, Max  int64         // scalar range
-	RefID     int           // arena identity for arena handles and data pointers (-1 = none)
+	RefID     int           // arena identity for arena handles and data pointers (-1 = unknown, may alias any arena)
 	AllocID   int           // allocation identity for data pointers (-1 = unknown)
 	Owned     bool          // this function holds the reference and must release it
 	Foreign   bool          // data pointer whose arena provenance is unknown (from a call)
@@ -1485,21 +1485,25 @@ func (v *Verifier) clearPayload(st *State, alloc int, payloadOff int64) {
 }
 
 // release frees the reference identified by refID: every handle, pointer and
-// memory cell referring to that arena becomes invalid. Pointers of unknown
-// provenance (Foreign) are invalidated too, since they may alias it.
+// memory cell referring to that arena becomes invalid. A reference of unknown
+// provenance — Foreign (from a call), or RefID == -1 (a merge that lost the
+// arena identity, or a pointer allocated from an unknown handle) — is
+// invalidated too, because it may alias the released arena. Anything else would
+// let a pointer whose arena identity was lost survive its arena's release.
 func (v *Verifier) release(st *State, refID int) {
 	for r := range st.Regs {
 		rs := &st.Regs[r]
 		if !rs.Defined || (rs.Type != TypeArena && rs.Type != TypeDataPtr) {
 			continue
 		}
-		if rs.RefID == refID || rs.Foreign {
+		if rs.RefID == refID || rs.RefID == -1 || rs.Foreign {
 			rs.Destroyed = true
 			rs.Owned = false
 		}
 	}
 	for k, c := range st.Mem {
-		if (c.Type == TypeArena || c.Type == TypeDataPtr) && (c.RefID == refID || c.Foreign) {
+		if (c.Type == TypeArena || c.Type == TypeDataPtr) &&
+			(c.RefID == refID || c.RefID == -1 || c.Foreign) {
 			c.Destroyed = true
 			st.Mem[k] = c
 		}
