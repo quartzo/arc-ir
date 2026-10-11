@@ -205,6 +205,7 @@ type RegState struct {
 	AllocSize int64         // reachable bytes (arena capacity/chunk, or allocation size)
 	Init      bool          // memory cell: has been written
 	Declared  bool          // memory cell: seeded from a struct field (type is a contract)
+	Clobbered bool          // register destroyed by a call (a scratch register the callee writes)
 	Destroyed bool          // owning arena destroyed / reference released
 }
 
@@ -308,8 +309,9 @@ func Verify(prog *ir.Program) (*Result, error) {
 	}
 
 	res := &Result{Funcs: len(m.Funcs), Module: m}
+	destroys := computeDestroys(m)
 	for _, f := range m.Funcs {
-		v := &Verifier{mod: m, f: f, in: make([]*State, len(f.Blocks))}
+		v := &Verifier{mod: m, f: f, in: make([]*State, len(f.Blocks)), destroys: destroys}
 		v.assignIDs()
 		entry, err := v.entryState()
 		if err != nil {
@@ -345,8 +347,41 @@ type Verifier struct {
 	in             []*State
 	refOf          map[[2]int]int // (block, instr) -> arena RefID
 	allocOf        map[[2]int]int // (block, instr) -> allocation AllocID
+	destroys       map[*ir.Function]map[ir.Register]bool
 	nextParamRef   int
 	nextParamAlloc int
+}
+
+// computeDestroys returns, for each function, the scratch registers a call to
+// it destroys: the scratch registers it writes, plus those its own calls
+// destroy, to a fixpoint.
+func computeDestroys(m *ir.Module) map[*ir.Function]map[ir.Register]bool {
+	out := map[*ir.Function]map[ir.Register]bool{}
+	for _, f := range m.Funcs {
+		out[f] = map[ir.Register]bool{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range m.Funcs {
+			for _, b := range f.Blocks {
+				for _, inst := range b.Instrs {
+					if inst.Op.HasDest() && inst.Dst.IsScratch() && !out[f][inst.Dst] {
+						out[f][inst.Dst] = true
+						changed = true
+					}
+					if inst.Op == ir.OpCall {
+						for r := range out[m.ByName[inst.Label]] {
+							if !out[f][r] {
+								out[f][r] = true
+								changed = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // assignIDs gives every arena-producing and allocation instruction a stable
@@ -908,6 +943,12 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				}
 			}
 		}
+		// A call destroys the scratch registers the callee writes (detected).
+		for r := range v.destroys[callee] {
+			if r != 0 {
+				st.Regs[r] = RegState{Clobbered: true}
+			}
+		}
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
 		case ir.KindArena:
@@ -1077,6 +1118,9 @@ func (v *Verifier) checkBounds(st *State, ptr *RegState, mem ir.Mem, w int64, in
 func (v *Verifier) defined(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
 	if !r.Valid() {
 		return nil, v.errf(inst, "missing register operand")
+	}
+	if st.Regs[r].Clobbered {
+		return nil, v.errf(inst, "use of destroyed register %s (a call destroyed it)", r)
 	}
 	if !st.Regs[r].Defined {
 		return nil, v.errf(inst, "use of uninitialized register %s", r)

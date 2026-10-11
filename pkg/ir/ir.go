@@ -19,14 +19,20 @@ import (
 	"strings"
 )
 
-// Register identifies one of the machine registers. Registers 0..15 are the
-// general-purpose file (r0..r15); registers 16..31 are the vector file
-// (v0..v15, mapped to XMM registers), which hold floats and SIMD values.
+// Register identifies one of the machine registers. Registers 0..31 are the
+// scratch general-purpose file (r0..r31, volatile across calls); 32..63 are the
+// preserved general-purpose file (s0..s31, callee-saved); 64..79 are the vector
+// file (v0..v15, mapped to XMM), which hold floats and SIMD values.
 type Register int
 
 const (
-	// NumGP is the number of general-purpose registers.
-	NumGP = 16
+	// NumScratch is the number of scratch (volatile) general-purpose registers.
+	NumScratch = 32
+	// NumPreserved is the number of preserved (callee-saved) general-purpose
+	// registers.
+	NumPreserved = 32
+	// NumGP is the number of general-purpose registers (scratch + preserved).
+	NumGP = NumScratch + NumPreserved
 	// NumVec is the number of vector registers.
 	NumVec = 16
 	// NumRegs is the total size of the register file.
@@ -48,11 +54,20 @@ func (r Register) IsGP() bool { return r >= 0 && r < NumGP }
 // IsVec reports whether r is a vector register.
 func (r Register) IsVec() bool { return r >= NumGP && r < NumRegs }
 
-// String renders a register as "rN" or "vN".
+// IsScratch reports whether r is a scratch (volatile) GP register. A call
+// destroys scratch registers.
+func (r Register) IsScratch() bool { return r >= 0 && r < NumScratch }
+
+// IsPreserved reports whether r is a preserved (callee-saved) GP register.
+func (r Register) IsPreserved() bool { return r >= NumScratch && r < NumGP }
+
+// String renders a register: "rN" (scratch), "sN" (preserved) or "vN".
 func (r Register) String() string {
 	switch {
-	case r.IsGP():
+	case r.IsScratch():
 		return fmt.Sprintf("r%d", int(r))
+	case r.IsPreserved():
+		return fmt.Sprintf("s%d", int(r)-NumScratch)
 	case r.IsVec():
 		return fmt.Sprintf("v%d", int(r)-NumGP)
 	default:

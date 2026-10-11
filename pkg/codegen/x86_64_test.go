@@ -105,8 +105,8 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = 5\n    CALL fact\n    PRINT r0\n    RET r0\n" +
 			"func fact(r1: i64):\n" +
 			"    JGT r1, 1, rec\n    r0 = 1\n    RET r0\n" +
-			"rec:\n    r2 = SUB r1, 1\n    r3 = r1\n    r1 = r2\n    CALL fact\n" +
-			"    r4 = MUL r3, r0\n    r0 = r4\n    RET r0\n", "120"},
+			"rec:\n    r2 = SUB r1, 1\n    s0 = r1\n    r1 = r2\n    CALL fact\n" +
+			"    r0 = MUL s0, r0\n    RET r0\n", "120"},
 		{"ptr", "func main:\n" +
 			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
 			"    r3 = 42\n    STORE [r2], r3\n    r1 = r2\n    CALL read\n" +
@@ -195,6 +195,9 @@ func TestCompileAndRun(t *testing.T) {
 			"    JV r1, Value.Int, as_int\n    JV r1, Value.Pair, as_pair\n    r0 = 0\n    RET r0\n" +
 			"as_int:\n    r0 = r1.n\n    r0 = ADD r0, r0\n    RET r0\n" +
 			"as_pair:\n    r2 = r1.a\n    r3 = r1.b\n    r0 = ADD r2, r3\n    RET r0\n", "42"},
+		{"preserved_block", "func main:\n" +
+			"    s0 = 42\n    CALL leaf\n    PRINT s0\n    RET\n" +
+			"func leaf:\n    s0 = 7\n    RET\n", "42"},
 	}
 
 	for _, tc := range cases {

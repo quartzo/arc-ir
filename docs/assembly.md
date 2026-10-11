@@ -261,8 +261,12 @@ The calling convention is:
 
 - Arguments are passed in `r1`–`r4`.
 - The return value is passed in `r0`.
-- All other registers are preserved across a call; a call is transparent to
-  the caller except for `r0`.
+- The file has two blocks (see [`registers.md`](registers.md)): **scratch**
+  (`r0`..`r31`) is volatile — a call may destroy it — and **preserved**
+  (`s0`..`s31`) is callee-saved. A value that must survive a call lives in a
+  preserved register. The compiler detects, per function, which registers it
+  writes: scratch writes become a caller error ("use of destroyed register");
+  preserved writes are saved by the callee.
 - The entry function is `main`; returning from it exits the process with `r0`
   as the exit status.
 

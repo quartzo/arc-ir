@@ -50,6 +50,7 @@ verification and code generation stay simple and direct.
 | — | Struct layout: natural alignment, `packed struct`, per-field `align N` | ✅ |
 | — | Signed/unsigned comparison: `JLT`/`JGT` lower to `jl`/`jb` by operand type | ✅ |
 | — | Enums: tagged unions (`VARIANT`/`JV`) with active-variant tag refinement | ✅ |
+| — | Register blocks: scratch `r0..r31` (volatile) and preserved `s0..s31` (callee-saved) | ✅ |
 
 ## Layout
 
@@ -68,10 +69,14 @@ arc-compiler/
 
 ## The register file
 
-ARC has 16 registers, `r0..r15`. They are plain 64-bit machine registers with
-no types of their own — the verifier tracks their abstract type per program
-point. The backend assigns each *used* register to a physical register,
-callee-saved first, and spills the remainder to stack slots:
+The general-purpose file has two blocks: **scratch** `r0..r31` (volatile across
+a call) and **preserved** `s0..s31` (callee-saved). The vector file is `v0..v15`.
+Registers are plain 64-bit machine registers with no types of their own — the
+verifier tracks their abstract type per program point. A value that must survive
+a call lives in a preserved register. See [`docs/registers.md`](docs/registers.md).
+
+The backend assigns each *used* register to a physical register, callee-saved
+first, and spills the remainder to stack slots:
 
 | Priority | Physical register | Notes |
 |----------|-------------------|-------|
@@ -81,8 +86,8 @@ callee-saved first, and spills the remainder to stack slots:
 | — | `%r10`, `%r11`, `%rax` | reserved scratch |
 | — | `%rsp` | stack pointer |
 
-Because runtime calls clobber caller-saved registers, every ARC register is
-saved to its stack slot around a call and restored afterwards.
+The 32+32 logical file currently maps through this earlier scheme (physical
+registers plus per-function stack slots); the physical/area split is still open.
 
 ## Instruction set
 

@@ -1222,17 +1222,30 @@ func parseRegister(tok string, lineNo int) (ir.Register, error) {
 		return ir.NoReg, fmt.Errorf("line %d: expected register, got %q", lineNo, tok)
 	}
 	n, err := strconv.Atoi(tok[1:])
-	if err != nil || n < 0 || n >= ir.NumGP {
-		return ir.NoReg, fmt.Errorf("line %d: register %q out of range (r0..r15 or v0..v15)", lineNo, tok)
+	if err != nil || n < 0 {
+		return ir.NoReg, fmt.Errorf("line %d: bad register %q", lineNo, tok)
 	}
-	if tok[0] == 'v' {
+	switch tok[0] {
+	case 'r':
+		if n >= ir.NumScratch {
+			return ir.NoReg, fmt.Errorf("line %d: scratch register %q out of range (r0..r31)", lineNo, tok)
+		}
+		return ir.Register(n), nil
+	case 's':
+		if n >= ir.NumPreserved {
+			return ir.NoReg, fmt.Errorf("line %d: preserved register %q out of range (s0..s31)", lineNo, tok)
+		}
+		return ir.Register(ir.NumScratch + n), nil
+	default: // 'v'
+		if n >= ir.NumVec {
+			return ir.NoReg, fmt.Errorf("line %d: vector register %q out of range (v0..v15)", lineNo, tok)
+		}
 		return ir.Register(ir.NumGP + n), nil
 	}
-	return ir.Register(n), nil
 }
 
 func isRegister(tok string) bool {
-	if len(tok) < 2 || (tok[0] != 'r' && tok[0] != 'v') {
+	if len(tok) < 2 || (tok[0] != 'r' && tok[0] != 's' && tok[0] != 'v') {
 		return false
 	}
 	for _, ch := range tok[1:] {

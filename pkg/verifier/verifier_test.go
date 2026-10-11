@@ -207,11 +207,10 @@ func TestVerifyRecursion(t *testing.T) {
 		"    RET r0\n" +
 		"rec:\n" +
 		"    r2 = SUB r1, 1\n" +
-		"    r3 = r1\n" +
+		"    s0 = r1\n" +
 		"    r1 = r2\n" +
 		"    CALL fact\n" +
-		"    r4 = MUL r3, r0\n" +
-		"    r0 = r4\n" +
+		"    r0 = MUL s0, r0\n" +
 		"    RET r0\n"
 	if _, err := Verify(mustParse(t, src)); err != nil {
 		t.Fatalf("expected recursion to verify, got %v", err)
@@ -983,6 +982,29 @@ func TestVerifyEnum(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestVerifyBlocks(t *testing.T) {
+	// A scratch register the callee writes is destroyed for the caller.
+	bad := "func main:\n    r5 = 42\n    CALL leaf\n    PRINT r5\n    RET\n" +
+		"func leaf:\n    r5 = 7\n    RET\n"
+	if _, err := Verify(mustParse(t, bad)); err == nil || !strings.Contains(err.Error(), "destroyed register") {
+		t.Fatalf("expected a destroyed-register error, got %v", err)
+	}
+
+	// A preserved register survives a call that writes it.
+	ok := "func main:\n    s0 = 42\n    CALL leaf\n    PRINT s0\n    RET\n" +
+		"func leaf:\n    s0 = 7\n    RET\n"
+	if _, err := Verify(mustParse(t, ok)); err != nil {
+		t.Fatalf("expected the preserved register to survive, got %v", err)
+	}
+
+	// A scratch register the callee does not write survives.
+	ok2 := "func main:\n    r5 = 42\n    CALL leaf\n    PRINT r5\n    RET\n" +
+		"func leaf:\n    r6 = 7\n    RET\n"
+	if _, err := Verify(mustParse(t, ok2)); err != nil {
+		t.Fatalf("expected an untouched scratch register to survive, got %v", err)
 	}
 }
 
