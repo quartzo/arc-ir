@@ -8,6 +8,5 @@ func main
     STORE [r3], r4
     r5 = LOAD [r3]
     PRINT r5
-    ARENA_DESTROY r1
     RET r5
 endfunc

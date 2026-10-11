@@ -21,7 +21,6 @@ loop:
 done:
     r4 = LOAD [r2 + r3*8 - 8]
     PRINT r4
-    ARENA_DESTROY r1
     RET r4
 `
 
@@ -30,9 +29,9 @@ func TestParseLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	// 3 labels + 11 instructions
-	if len(prog.Instrs) != 14 {
-		t.Fatalf("got %d instructions, want 14", len(prog.Instrs))
+	// 3 labels + 10 instructions
+	if len(prog.Instrs) != 13 {
+		t.Fatalf("got %d instructions, want 13", len(prog.Instrs))
 	}
 
 	create := prog.Instrs[1]

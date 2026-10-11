@@ -121,7 +121,6 @@ an arena invalidates every pointer derived from it.
 | `rdst = ARENA_CREATE <tier>, growable(<chunk>)` | create a **growable** arena whose chunks are `chunk` bytes |
 | `rdst = ARENA_ALLOC rsrc, [T; N]` | allocate an array of `N` elements of type `T` (`i8`…`i64`, `u8`…`u64`, `f32`, `f64`); `rdst` is an array pointer |
 | `rdst = ARENA_ALLOC rsrc, <Struct | Enum>` | allocate `sizeof(...)` and give `rdst` the struct or enum type |
-| `ARENA_DESTROY rsrc` | free arena `rsrc` and invalidate its pointers |
 
 Tiers: `DRAM_LOCAL`, `CXL_POOLED`, `PERSISTENT` (or the integers `0`, `1`, `2`).
 
@@ -217,8 +216,7 @@ field's offset (see §11).
 
 All pointers passed to `LOAD`/`STORE` must originate from `ARENA_ALLOC`. An
 allocation is a contiguous region `[base, base + size)`. The verifier rejects
-any access that is not provably inside a live allocation, and any use of a
-pointer whose arena has been destroyed.
+any access that is not provably inside a live allocation.
 
 An arena's memory tier records where its backing store lives (node-local DRAM,
 pooled CXL, persistent memory). In the reference runtime every tier shares the
@@ -279,8 +277,8 @@ Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`),
 type of the region it points to — either a named struct (`ptr(Struct)`, see §9)
 or an array of scalar elements (`ptr([T; N])`, where `T` is `i8`…`i64`,
 `u8`…`u64`, `f32` or `f64`, and `N` is a positive element count). An `arena`
-parameter is **borrowed**: the callee may allocate from it but not release it
-(see §7):
+parameter is **borrowed**: the callee may allocate from it but the region
+belongs to the caller (see §7):
 
 ```
 func read(r1: ptr([i64; 8]))
@@ -315,30 +313,26 @@ named `main`.
 ## 7. Regions and lifetime
 
 A region is **function-scoped**: it lives at most as long as the function that
-creates it. It is released early with `ARENA_DESTROY`, and any region still
-owned when the function returns is released **automatically** at the `RET`.
+creates it, and is released **automatically** at the `RET`. There is no explicit
+release.
 
-- `ARENA_DESTROY r` releases the arena in `r`. `r` must be an owned arena;
-  destroying a borrowed arena is rejected.
-- Releasing an arena invalidates every handle and data pointer to it. Data
-  pointers whose arena provenance is unknown (a merge that lost the arena
-  identity, or a pointer returned from a call) are conservatively treated as
-  aliasing any arena and are invalidated too.
-- A region cannot escape its creating function: `-> arena`, `own` parameters
-  and `arena` fields are rejected, and a pointer into a local region may not be
-  stored into memory that outlives the call.
-- An `arena` parameter is borrowed: the callee may allocate from it but must
-  not release it. To build data across a call, the caller creates the region and
-  passes it down; a callee may return a pointer into it, because the region
-  outlives the call.
+- A region cannot escape its creating function: `-> arena`, `own` parameters and
+  `arena` fields are rejected, and a reference to a local region may not be
+  returned or stored into memory that outlives the call.
+- A pointer returned from a call has unknown provenance and is conservatively
+  treated as possibly local: it cannot be returned onward or stored into memory
+  that outlives the call.
+- An `arena` parameter is borrowed: the callee may allocate from it but the
+  region belongs to the caller. To build data across a call, the caller creates
+  the region and passes it down; a callee may return a pointer into it, because
+  the region outlives the call.
 
 ```
 func main
-    s0 = ARENA_CREATE DRAM_LOCAL, 64   ; owned here
+    s0 = ARENA_CREATE DRAM_LOCAL, 64   ; the region belongs to main
     r1 = s0
     CALL fill                          ; fill borrows s0
-    ARENA_DESTROY s0                   ; released here (or automatically at RET)
-    RET
+    RET                                ; s0 is released here automatically
 endfunc
 
 func fill(r1: arena)

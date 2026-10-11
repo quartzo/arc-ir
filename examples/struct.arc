@@ -18,6 +18,5 @@ func main
     PRINT r7
     r8 = r2.val             ; load the scalar field
     PRINT r8
-    ARENA_DESTROY r1
     RET r7
 endfunc

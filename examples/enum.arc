@@ -17,7 +17,6 @@ func main
     r1 = r2
     CALL twice
     PRINT r0
-    ARENA_DESTROY s0
     RET
 endfunc
 

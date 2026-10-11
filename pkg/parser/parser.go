@@ -882,7 +882,10 @@ func parseOp(c *cursor, op ir.OpCode, dst ir.Register, lineNo int) (ir.Instructi
 			return inst, fmt.Errorf("line %d: ARENA_ALLOC needs a type: [Elem; Count] or a struct", lineNo)
 		}
 
-	case ir.OpArenaDestroy, ir.OpPrint, ir.OpRet:
+	case ir.OpArenaDestroy:
+		return inst, fmt.Errorf("line %d: ARENA_DESTROY is not supported: a region is released automatically when its function returns", lineNo)
+
+	case ir.OpPrint, ir.OpRet:
 		if op == ir.OpRet && !c.more() {
 			return inst, nil // bare RET
 		}

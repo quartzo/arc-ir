@@ -99,7 +99,6 @@ are 5/6 rather than the 5/10 the model targets.
 | `rdst = <imm>` / `rdst = rsrc` | load immediate / copy |
 | `rdst = ARENA_CREATE <tier>, <size>` | create an arena |
 | `rdst = ARENA_ALLOC rsrc, <[T; N] | Struct>` | allocate a typed region inside an arena |
-| `ARENA_DESTROY rsrc` | free an arena and invalidate its pointers |
 | `rdst = LOAD [mem]` | read a value (width from the pointed-to type) |
 | `STORE [mem], rsrc` | write a value (width from the pointed-to type) |
 | `VARIANT r, Enum.Variant` | select a union variant (writes the tag) |
@@ -132,7 +131,6 @@ loop:
 done:
     r4 = LOAD [r2 + r3*8 - 8]
     PRINT r4
-    ARENA_DESTROY r1
     RET r4
 ```
 
@@ -183,19 +181,19 @@ region lives only as long as the function that creates it.
 ## Regions and lifetime
 
 A region is **function-scoped**: it lives at most as long as the function that
-creates it. A function may release a region early with `ARENA_DESTROY`; any
-region still owned when the function returns is released **automatically** at
-the `RET`. A region cannot escape its creating function — returning an `arena`,
-an `own` parameter, and an `arena` field are all rejected, and a pointer into a
-local region may not be stored into memory that outlives the call.
+creates it, and is released **automatically** at the `RET`. There is no explicit
+release. A region cannot escape its creating function — returning an `arena`, an
+`own` parameter, and an `arena` field are all rejected, and a reference to a
+local region may not be returned or stored into memory that outlives the call.
 
-- An `arena` parameter is **borrowed**: the callee may allocate from it but not
-  release it.
+- An `arena` parameter is **borrowed**: the callee may allocate from it but the
+  region belongs to the caller.
 - To build data across a call, the **caller creates the region and passes it
   down** (as an `arena` or a `ptr`). A callee can return a pointer into it,
   because the region outlives the call.
-- Data pointers of unknown provenance (returned from a call) are conservatively
-  treated as aliasing any arena.
+- A pointer returned from a call has unknown provenance and is conservatively
+  treated as possibly local: it cannot be returned onward or stored into memory
+  that outlives the call.
 
 `examples/region.arc`:
 
@@ -204,8 +202,7 @@ func main
     s0 = ARENA_CREATE DRAM_LOCAL, 64
     r1 = s0
     CALL fill
-    ARENA_DESTROY s0
-    RET
+    RET                       ; s0 is released here automatically
 endfunc
 
 func fill(r1: arena)
@@ -308,9 +305,10 @@ Rejected programs include:
 
 - **Out-of-bounds** — a static or dynamic access whose range cannot be proven
   to fit `[0, AllocSize)`.
-- **Use-after-destroy** — touching a pointer whose arena was freed.
-- **Double-destroy**, **use of an uninitialized register**, **type misuse**
-  (`LOAD` from an integer, `ARENA_ALLOC` on an integer, ...).
+- **Escape** — returning a reference to a region created in the function, or
+  storing one into memory that outlives the call.
+- **Use of an uninitialized register**, **type misuse** (`LOAD` from an integer,
+  `ARENA_ALLOC` on an integer, ...).
 - **Allocation exceeding arena capacity**, **non-positive sizes**.
 
 Errors carry the source line, which lets a generating LLM be fed back in a
@@ -343,8 +341,8 @@ program exited with status 9      # exit code = `RET` value
 Invalid examples are rejected before any code is emitted:
 
 ```
-$ ./arcc verify examples/invalid_uaf.arc
-arcc: verify error (line 7): use-after-destroy: r2 points into a destroyed arena
+$ ./arcc verify examples/invalid_escape.arc
+arcc: verify error (line 22): cannot store a reference to a region created here into memory that outlives the function (regions are function-scoped)
 
 $ ./arcc verify examples/invalid_oob.arc
 arcc: verify error (line 6): out-of-bounds: access [r2 + 12] may reach offset 20, exceeding allocation of 16 bytes

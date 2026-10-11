@@ -18,7 +18,6 @@ func main
     r1 = r2
     CALL read
     PRINT r0
-    ARENA_DESTROY s0
     RET r0
 endfunc
 

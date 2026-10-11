@@ -43,7 +43,6 @@ loop:
 done:
     r4 = LOAD [r2 + r3*8 - 8]
     PRINT r4
-    ARENA_DESTROY r1
     RET r4
 `
 
@@ -173,7 +172,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = r2\n" +
 			"    CALL read\n" +
 			"    PRINT r0\n" +
-			"    ARENA_DESTROY s0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
 			"func read(r1: ptr([i64; 8]))\n" +
@@ -189,7 +187,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    STORE [r2], r3\n" +
 			"    r4 = LOAD [r2]\n" +
 			"    PRINT r4\n" +
-			"    ARENA_DESTROY s0\n" +
 			"    RET r4\n" +
 			"endfunc\n" +
 			"func make(r1: arena) -> ptr([i64; 8])\n" +
@@ -221,7 +218,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r9\n" +
 			"    r10 = r2.d\n" +
 			"    PRINT r10\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r7\n" +
 			"endfunc\n", "200\n40000\n3000000000\n123456789"},
 		{"growable", "func main\n" +
@@ -232,7 +228,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    STORE [r3], r4\n" +
 			"    r5 = LOAD [r3]\n" +
 			"    PRINT r5\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r5\n" +
 			"endfunc\n", "77"},
 		{"auto_free", "func main\n" +
@@ -300,7 +295,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r7\n" +
 			"    r8 = r2.val\n" +
 			"    PRINT r8\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r7\n" +
 			"endfunc\n", "42\n7"},
 		{"ptr_struct", "struct Node\n" +
@@ -319,7 +313,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = r2\n" +
 			"    CALL read\n" +
 			"    PRINT r0\n" +
-			"    ARENA_DESTROY s0\n" +
 			"    RET r0\n" +
 			"endfunc\n" +
 			"func read(r1: ptr(Node))\n" +
@@ -338,7 +331,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r5\n" +
 			"    r6 = LOAD [r2 + 8]\n" +
 			"    PRINT r6\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r5\n" +
 			"endfunc\n", "11\n22"},
 		{"f64_array", "func main\n" +
@@ -348,7 +340,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    STORE [r2 + 8], v1\n" +
 			"    v2 = LOAD [r2 + 8]\n" +
 			"    PRINTF v2\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET\n" +
 			"endfunc\n", "1.5"},
 		{"bytes", "func main\n" +
@@ -362,7 +353,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r5\n" +
 			"    r6 = LOAD [r2 + 1]\n" +
 			"    PRINT r6\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r5\n" +
 			"endfunc\n", "65\n66"},
 		{"u16_i8", "func main\n" +
@@ -377,7 +367,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    STORE [r5], r6\n" +
 			"    r7 = LOAD [r5]\n" +
 			"    PRINT r7\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r4\n" +
 			"endfunc\n", "50000\n-5"},
 		{"unsigned_cmp", "func main\n" +
@@ -391,7 +380,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    r0 = 1\n" +
 			"big:\n" +
 			"    PRINT r0\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r0\n" +
 			"endfunc\n", "0"},
 		{"packed", "packed struct P\n" +
@@ -407,7 +395,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    r2.b = r4\n" +
 			"    r5 = r2.b\n" +
 			"    PRINT r5\n" +
-			"    ARENA_DESTROY r1\n" +
 			"    RET r5\n" +
 			"endfunc\n", "123456"},
 		{"enum", "enum Value\n" +
@@ -424,7 +411,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    r1 = r2\n" +
 			"    CALL twice\n" +
 			"    PRINT r0\n" +
-			"    ARENA_DESTROY s0\n" +
 			"    RET\n" +
 			"endfunc\n" +
 			"func twice(r1: ptr(Value)) -> i64\n" +

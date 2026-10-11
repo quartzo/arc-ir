@@ -13,7 +13,6 @@ func main
     s1.p = s2
     r1 = s1
     CALL fill
-    ARENA_DESTROY s0
     RET
 endfunc
 
@@ -21,6 +20,5 @@ func fill(r1: ptr(Box))
     r2 = ARENA_CREATE DRAM_LOCAL, 64
     r3 = ARENA_ALLOC r2, [i64; 8]
     r1.p = r3
-    ARENA_DESTROY r2
     RET
 endfunc

@@ -195,8 +195,6 @@ type RegState struct {
 	Min, Max  int64         // scalar range
 	RefID     int           // arena identity for arena handles and data pointers (-1 = unknown, may alias any arena)
 	AllocID   int           // allocation identity for data pointers (-1 = unknown)
-	Owned     bool          // this function holds the reference and must release it
-	Foreign   bool          // data pointer whose arena provenance is unknown (from a call)
 	Growable  bool          // arena handle: extensible (AllocSize is the chunk size)
 	Struct    string        // data pointer: struct or enum type name, if any
 	Elem      ir.ScalarKind // data pointer: array element type (when Count > 0)
@@ -206,7 +204,6 @@ type RegState struct {
 	Init      bool          // memory cell: has been written
 	Declared  bool          // memory cell: seeded from a struct field (type is a contract)
 	Clobbered bool          // register destroyed by a call (a scratch register the callee writes)
-	Destroyed bool          // owning arena destroyed / reference released
 }
 
 // MemKey identifies a memory cell: an allocation and a byte offset.
@@ -403,12 +400,15 @@ func (v *Verifier) entryState() (State, error) {
 			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, AllocSize: p.Size}
 			v.nextParamRef++
 		case ir.KindPtr:
-			// Provenance is unknown; treat it as possibly aliasing any arena.
-			// The parameter gets its own allocation view so its cells can be
-			// typed inside the callee.
+			// A pointer parameter points into a region that outlives the call
+			// (the caller owns it), so it gets a non-local reference and may be
+			// returned or stored. It also gets its own allocation view so its
+			// cells can be typed inside the callee.
+			ref := v.nextParamRef
+			v.nextParamRef++
 			alloc := v.nextParamAlloc
 			v.nextParamAlloc++
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: alloc, Foreign: true, AllocSize: p.Size, Struct: p.Struct, Elem: p.Elem, Count: p.Count, Variant: -1}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeDataPtr, RefID: ref, AllocID: alloc, AllocSize: p.Size, Struct: p.Struct, Elem: p.Elem, Count: p.Count, Variant: -1}
 			if p.Struct != "" {
 				if err := v.seedNamed(&st, alloc, p.Struct, true); err != nil {
 					return st, fmt.Errorf("function %s: %w", v.f.Name, err)
@@ -435,7 +435,7 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			if err := v.checkReturn(st, inst); err != nil {
 				return nil, err
 			}
-			v.autoFree[bi] = ownedRegs(st)
+			v.autoFree[bi] = v.localRegs(st)
 			return out, nil
 
 		case inst.Op == ir.OpJmp:
@@ -563,7 +563,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if inst.Size <= 0 {
 			return v.errf(inst, "arena size must be positive, got %d", inst.Size)
 		}
-		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, Growable: inst.Growable, AllocSize: inst.Size}
+		st.Regs[inst.Dst] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Growable: inst.Growable, AllocSize: inst.Size}
 		st.setUsed(ref, 0)
 		return nil
 
@@ -605,23 +605,6 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				return v.errf(inst, "%s", err)
 			}
 		}
-		return nil
-
-	case ir.OpArenaDestroy:
-		rs, err := v.defined(st, inst.Src[0], inst)
-		if err != nil {
-			return err
-		}
-		if rs.Type != TypeArena {
-			return v.errf(inst, "expected arena in %s, got %s", inst.Src[0], rs.Type)
-		}
-		if rs.Destroyed {
-			return v.errf(inst, "arena %s is already destroyed", inst.Src[0])
-		}
-		if !rs.Owned {
-			return v.errf(inst, "cannot destroy borrowed arena %s (not owned here)", inst.Src[0])
-		}
-		v.release(st, rs.RefID)
 		return nil
 
 	case ir.OpLoad:
@@ -743,7 +726,6 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			Count:     cell.Count,
 			Declared:  true,
 			Init:      true,
-			Destroyed: src.Destroyed,
 		})
 		return nil
 
@@ -924,7 +906,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
 		case ir.KindPtr:
-			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
 		default:
 			t := scalarRegType(callee.RetScalar)
 			lo, hi := intRange(t)
@@ -1188,7 +1170,6 @@ func loadFromCell(cell RegState) RegState {
 		Struct:    cell.Struct,
 		Elem:      cell.Elem,
 		Count:     cell.Count,
-		Destroyed: cell.Destroyed,
 	}
 	if isInt(cell.Type) {
 		out.Min, out.Max = intRange(cell.Type)
@@ -1418,9 +1399,6 @@ func (v *Verifier) arena(st *State, r ir.Register, inst ir.Instruction) (*RegSta
 	if rs.Type != TypeArena {
 		return nil, v.errf(inst, "expected arena in %s, got %s", r, rs.Type)
 	}
-	if rs.Destroyed {
-		return nil, v.errf(inst, "use-after-destroy: arena %s was destroyed", r)
-	}
 	return rs, nil
 }
 
@@ -1431,9 +1409,6 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 	}
 	if rs.Type != TypeDataPtr {
 		return nil, v.errf(inst, "expected data pointer in %s, got %s", r, rs.Type)
-	}
-	if rs.Destroyed {
-		return nil, v.errf(inst, "use-after-destroy: %s points into a destroyed arena", r)
 	}
 	return rs, nil
 }
@@ -1503,43 +1478,14 @@ func (v *Verifier) clearPayload(st *State, alloc int, payloadOff int64) {
 	}
 }
 
-// release frees the reference identified by refID: every handle, pointer and
-// memory cell referring to that arena becomes invalid. A reference of unknown
-// provenance — Foreign (from a call), or RefID == -1 (a merge that lost the
-// arena identity, or a pointer allocated from an unknown handle) — is
-// invalidated too, because it may alias the released arena. Anything else would
-// let a pointer whose arena identity was lost survive its arena's release.
-func (v *Verifier) release(st *State, refID int) {
-	for r := range st.Regs {
-		rs := &st.Regs[r]
-		if !rs.Defined || (rs.Type != TypeArena && rs.Type != TypeDataPtr) {
-			continue
-		}
-		if rs.RefID == refID || rs.RefID == -1 || rs.Foreign {
-			rs.Destroyed = true
-			rs.Owned = false
-		}
-	}
-	for k, c := range st.Mem {
-		if (c.Type == TypeArena || c.Type == TypeDataPtr) &&
-			(c.RefID == refID || c.RefID == -1 || c.Foreign) {
-			c.Destroyed = true
-			st.Mem[k] = c
-		}
-	}
-	delete(st.Used, refID)
-}
-
 // checkReturn verifies a RET: the returned value matches the declared return
-// type. Owned arenas are released automatically at RET (see ownedRegs).
+// type. Regions created in this function are released automatically at RET (see
+// localRegs).
 func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 	if inst.Src[0].Valid() {
 		rs, err := v.defined(st, inst.Src[0], inst)
 		if err != nil {
 			return err
-		}
-		if rs.Destroyed {
-			return v.errf(inst, "returning %s, which is no longer live", inst.Src[0])
 		}
 		switch v.f.RetKind {
 		case ir.KindScalar:
@@ -1551,6 +1497,9 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 			if rs.Type != TypeDataPtr {
 				return v.errf(inst, "returning %s, but function %s declares return type %s",
 					rs.Type, v.f.Name, v.f.RetKind)
+			}
+			if rs.RefID == -1 || v.localRefs[rs.RefID] {
+				return v.errf(inst, "cannot return %s: it may point into a region created here, which does not outlive the function", inst.Src[0])
 			}
 			if v.f.RetStruct != "" && rs.Struct != v.f.RetStruct {
 				return v.errf(inst, "function %s must return a %s pointer", v.f.Name, v.f.RetStruct)
@@ -1566,14 +1515,14 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 	return nil
 }
 
-// ownedRegs returns the registers that hold an owned, still-live arena at a
-// RET. They are released automatically when the function returns: a region
-// lives at most as long as the function that creates it.
-func ownedRegs(st *State) []ir.Register {
+// localRegs returns the registers that hold a handle to a region created in
+// this function at a RET. They are released automatically when the function
+// returns: a region lives at most as long as the function that creates it.
+func (v *Verifier) localRegs(st *State) []ir.Register {
 	var out []ir.Register
 	for r := 0; r < ir.NumRegs; r++ {
 		rs := st.Regs[r]
-		if rs.Defined && rs.Owned && rs.Type == TypeArena && !rs.Destroyed {
+		if rs.Defined && rs.Type == TypeArena && v.localRefs[rs.RefID] {
 			out = append(out, ir.Register(r))
 		}
 	}
@@ -1669,8 +1618,6 @@ func mergeStates(a, b State) State {
 		}
 		ra.Min = min64(ra.Min, rb.Min)
 		ra.Max = max64(ra.Max, rb.Max)
-		ra.Destroyed = ra.Destroyed || rb.Destroyed
-		ra.Foreign = ra.Foreign || rb.Foreign
 		ra.Growable = ra.Growable && rb.Growable
 		ra.AllocSize = minAlloc(ra.AllocSize, rb.AllocSize)
 		if ra.Struct != rb.Struct || ra.Count != rb.Count || ra.Elem != rb.Elem {
@@ -1681,13 +1628,10 @@ func mergeStates(a, b State) State {
 			ra.Variant = -1
 		}
 		if ra.RefID != rb.RefID || ra.AllocID != rb.AllocID {
-			// Different arenas/allocations on the two paths: provenance and
-			// ownership are unknown.
+			// Different arenas/allocations on the two paths: provenance is
+			// unknown.
 			ra.RefID = -1
 			ra.AllocID = -1
-			ra.Owned = false
-		} else {
-			ra.Owned = ra.Owned && rb.Owned
 		}
 		m.Regs[r] = ra
 	}
@@ -1729,8 +1673,6 @@ func mergeMem(a, b map[MemKey]RegState) map[MemKey]RegState {
 			out[k] = RegState{Type: TypeUnknown, RefID: -1, AllocID: -1}
 			continue
 		}
-		va.Destroyed = va.Destroyed || vb.Destroyed
-		va.Foreign = va.Foreign || vb.Foreign
 		va.AllocSize = minAlloc(va.AllocSize, vb.AllocSize)
 		if va.RefID != vb.RefID || va.AllocID != vb.AllocID {
 			va.RefID = -1

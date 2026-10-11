@@ -238,7 +238,7 @@ const (
 	OpMov          // rdst = imm            | rdst = rsrc
 	OpArenaCreate  // rdst = ARENA_CREATE tier, size
 	OpArenaAlloc   // rdst = ARENA_ALLOC rsrc, size
-	OpArenaDestroy // ARENA_DESTROY rsrc
+	OpArenaDestroy // ARENA_DESTROY rsrc  (internal: emitted by the verifier's auto-free, not writable)
 	OpLoad         // rdst = LOAD [mem]
 	OpStore        // STORE [mem], rsrc
 	OpField        // rdst = rbase.field      (resolved by the verifier to LOAD)

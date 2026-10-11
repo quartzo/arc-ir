@@ -27,6 +27,5 @@ func main
     PRINT r9
     r10 = r2.d
     PRINT r10
-    ARENA_DESTROY r1
     RET r7
 endfunc

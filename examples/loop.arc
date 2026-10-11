@@ -12,5 +12,4 @@ loop:
 done:
     r4 = LOAD [r2 + r3*8 - 8]
     PRINT r4
-    ARENA_DESTROY r1
     RET r4
