@@ -135,10 +135,7 @@ func TestParsePtrParam(t *testing.T) {
 }
 
 func TestParseReturnType(t *testing.T) {
-	src := "func f() -> arena\n" +
-		"    RET\n" +
-		"endfunc\n" +
-		"func g() -> ptr([i64; 8])\n" +
+	src := "func g() -> ptr([i64; 8])\n" +
 		"    RET\n" +
 		"endfunc\n" +
 		"func h() -> i64\n" +
@@ -148,31 +145,26 @@ func TestParseReturnType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if f := prog.Instrs[0]; f.RetKind != ir.KindArena {
-		t.Errorf("f return = %v", f.RetKind)
-	}
-	if g := prog.Instrs[2]; g.RetKind != ir.KindPtr || g.RetSize != 64 {
+	if g := prog.Instrs[0]; g.RetKind != ir.KindPtr || g.RetSize != 64 {
 		t.Errorf("g return = %v/%d", g.RetKind, g.RetSize)
 	}
-	if h := prog.Instrs[4]; h.RetKind != ir.KindScalar {
+	if h := prog.Instrs[2]; h.RetKind != ir.KindScalar {
 		t.Errorf("h return = %v", h.RetKind)
 	}
 }
 
-func TestParseOwnParam(t *testing.T) {
-	prog, err := Parse("func f(r1: own arena, r2: arena)\n" +
+func TestParseArenaParam(t *testing.T) {
+	prog, err := Parse("func f(r1: arena, r2: ptr([i64; 8]))\n" +
 		"    RET\n" +
 		"endfunc\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	p0 := prog.Instrs[0].Params[0]
-	if p0.Kind != ir.KindArena || !p0.Own {
-		t.Errorf("own param parsed as %+v", p0)
+	if p0 := prog.Instrs[0].Params[0]; p0.Kind != ir.KindArena {
+		t.Errorf("arena param parsed as %+v", p0)
 	}
-	p1 := prog.Instrs[0].Params[1]
-	if p1.Kind != ir.KindArena || p1.Own {
-		t.Errorf("borrow param parsed as %+v", p1)
+	if p1 := prog.Instrs[0].Params[1]; p1.Kind != ir.KindPtr {
+		t.Errorf("ptr param parsed as %+v", p1)
 	}
 }
 
@@ -428,9 +420,15 @@ func TestParseErrors(t *testing.T) {
 		{"unknown param type", "func f(r1: blob)\n" +
 			"    RET\n" +
 			"endfunc\n", "unknown type"},
-		{"own on non-arena", "func f(r1: own i64)\n" +
+		{"own param rejected", "func f(r1: own arena)\n" +
 			"    RET\n" +
-			"endfunc\n", "only valid for arena"},
+			"endfunc\n", "'own' is not supported"},
+		{"arena return rejected", "func f() -> arena\n" +
+			"    RET\n" +
+			"endfunc\n", "arena cannot be returned"},
+		{"arena field rejected", "struct S\n" +
+			"    a: arena\n" +
+			"endstruct\n", "arena field is not supported"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
 		{"missing endfunc", "func f\n    RET\n", "unterminated function"},

@@ -15,8 +15,8 @@ costs nothing, but it cannot be recovered dynamically. Therefore every place
 where a word crosses a boundary where the flow of meaning is interrupted needs
 an annotation to re-establish it:
 
-1. a **function argument** — `r1: ptr([i64; 8])`, `r1: ptr(Node)`, `r1: own arena`;
-2. a **function return** — `-> arena(4096)`;
+1. a **function argument** — `r1: ptr([i64; 8])`, `r1: ptr(Node)`, `r1: arena`;
+2. a **function return** — `-> ptr([i64; 8])`;
 3. **memory** — a statically-addressed cell remembers the type stored in it.
 
 The product is the verifier, not the ISA. The ISA is trivial on purpose.
@@ -48,8 +48,10 @@ alternatives are recorded so the choices are visible and revisitable.
   **fixed** arena whose capacity is proven at compile time (never fails at run
   time), and a **growable** arena that adds chunks on demand (aborts on OOM,
   like Rust's default allocator).
-- **(chosen) Linear references for arena handles** — ownership is tracked and
-  transfers are explicit (`own`), so use-after-free across calls is caught.
+- **(chosen) Function-scoped regions** — a region lives at most as long as the
+  function that creates it and cannot escape it, so a pointer can never outlive
+  the region it points into. To build data across a call, the caller creates the
+  region and passes it down.
 - Linear/affine types per allocation — Rust-style, more precise, harder to
   express on a flat machine.
 - Reference counting / GC — runtime cost; not "assembly".
@@ -92,8 +94,8 @@ alternatives are recorded so the choices are visible and revisitable.
 
 ### What to import from eBPF
 
-Imported: value ranges, branch refinement, typed memory cells, linear
-references/ownership, cumulative arena-capacity checks.
+Imported: value ranges, branch refinement, typed memory cells, function-scoped
+regions, cumulative arena-capacity checks.
 
 Available, not yet imported: state pruning, bounded-loop proofs, nullability
 types, call-depth limits (deliberately declined).

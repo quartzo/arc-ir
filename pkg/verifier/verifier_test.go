@@ -312,9 +312,10 @@ func TestVerifyFunctionRejections(t *testing.T) {
 }
 
 func TestVerifyNonScalarReturns(t *testing.T) {
+	// A pointer into a caller-owned region can be returned: the region outlives
+	// the call.
 	src := "func main\n" +
-		"    CALL get_arena\n" +
-		"    s0 = r0\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 		"    r1 = s0\n" +
 		"    CALL make\n" +
 		"    r2 = r0\n" +
@@ -324,10 +325,6 @@ func TestVerifyNonScalarReturns(t *testing.T) {
 		"    PRINT r4\n" +
 		"    ARENA_DESTROY s0\n" +
 		"    RET r4\n" +
-		"endfunc\n" +
-		"func get_arena() -> arena\n" +
-		"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    RET r0\n" +
 		"endfunc\n" +
 		"func make(r1: arena) -> ptr([i64; 8])\n" +
 		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -377,11 +374,10 @@ func TestVerifyReturnRejections(t *testing.T) {
 			"bare RET for non-scalar",
 			"func main\n" +
 				"    CALL f\n" +
-				"    ARENA_DESTROY r0\n" +
 				"    r1 = 0\n" +
 				"    RET r1\n" +
 				"endfunc\n" +
-				"func f() -> arena\n" +
+				"func f() -> ptr([i64; 8])\n" +
 				"    RET\n" +
 				"endfunc\n",
 			"RET has no value",
@@ -389,13 +385,11 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"return into destroyed arena",
 			"func main\n" +
-				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r1 = r5\n" +
-				"    CALL f\n" +
 				"    r1 = 0\n" +
 				"    RET r1\n" +
 				"endfunc\n" +
-				"func f(r1: own arena) -> ptr([i64; 8])\n" +
+				"func f() -> ptr([i64; 8])\n" +
+				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 				"    ARENA_DESTROY r1\n" +
 				"    RET r0\n" +
@@ -417,18 +411,22 @@ func TestVerifyReturnRejections(t *testing.T) {
 }
 
 func TestVerifyOwnership(t *testing.T) {
-	// Transferring ownership and destroying inside the callee is allowed.
+	// A borrowed region: the callee allocates from it; the caller releases it.
 	valid := "func main\n" +
-		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    CALL consume\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r1 = s0\n" +
+		"    CALL fill\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET\n" +
 		"endfunc\n" +
-		"func consume(r1: own arena)\n" +
-		"    ARENA_DESTROY r1\n" +
+		"func fill(r1: arena)\n" +
+		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
+		"    r3 = 1\n" +
+		"    STORE [r2], r3\n" +
 		"    RET\n" +
 		"endfunc\n"
 	if _, err := Verify(mustParse(t, valid)); err != nil {
-		t.Fatalf("expected own transfer to verify, got %v", err)
+		t.Fatalf("expected the borrowed-region pattern to verify, got %v", err)
 	}
 
 	cases := []struct {
@@ -436,14 +434,6 @@ func TestVerifyOwnership(t *testing.T) {
 		src  string
 		want string
 	}{
-		{
-			"leak",
-			"func main\n" +
-				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    RET\n" +
-				"endfunc\n",
-			"never released",
-		},
 		{
 			"destroy borrowed arena",
 			"func main\n" +
@@ -460,40 +450,28 @@ func TestVerifyOwnership(t *testing.T) {
 			"borrowed arena",
 		},
 		{
-			"use after ownership transfer",
-			"func main\n" +
-				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    s1 = ARENA_ALLOC s0, [i64; 8]\n" +
-				"    s2 = 7\n" +
-				"    r1 = s0\n" +
-				"    CALL consume\n" +
-				"    STORE [s1], s2\n" +
-				"    RET\n" +
-				"endfunc\n" +
-				"func consume(r1: own arena)\n" +
-				"    ARENA_DESTROY r1\n" +
-				"    RET\n" +
-				"endfunc\n",
-			"use-after-destroy",
-		},
-		{
-			"cannot transfer borrowed arena",
-			"func main\n" +
-				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r1 = s0\n" +
-				"    CALL give\n" +
+			"local pointer escapes into foreign memory",
+			"struct Box\n" +
+				"    p: ptr([i64; 8])\n" +
+				"endstruct\n" +
+				"func main\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+				"    s1 = ARENA_ALLOC s0, Box\n" +
+				"    s2 = ARENA_ALLOC s0, [i64; 8]\n" +
+				"    s1.p = s2\n" +
+				"    r1 = s1\n" +
+				"    CALL fill\n" +
 				"    ARENA_DESTROY s0\n" +
 				"    RET\n" +
 				"endfunc\n" +
-				"func give(r1: arena)\n" +
-				"    CALL take\n" +
-				"    RET\n" +
-				"endfunc\n" +
-				"func take(r1: own arena)\n" +
-				"    ARENA_DESTROY r1\n" +
+				"func fill(r1: ptr(Box))\n" +
+				"    r2 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r3 = ARENA_ALLOC r2, [i64; 8]\n" +
+				"    r1.p = r3\n" +
+				"    ARENA_DESTROY r2\n" +
 				"    RET\n" +
 				"endfunc\n",
-			"cannot transfer a borrowed arena",
+			"outlives the function",
 		},
 	}
 	for _, tc := range cases {

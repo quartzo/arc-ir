@@ -16,7 +16,7 @@ cannot cause undefined behavior:
 - no allocation that exceeds an arena's declared capacity (cumulative, across
   the whole program, including through function calls),
 - no type misuse (loading through an integer, storing an arena handle in memory,
-  transferring a borrowed arena as owned, ...).
+  letting a region escape the function that creates it, ...).
 
 The guarantee is **whole-program**: it holds across function calls, because
 functions are verified against typed signatures and every call site is checked
@@ -39,24 +39,25 @@ contract; completeness is best-effort.
 
 - **Termination.** The verifier proves memory safety, not that the program
   halts. Loops and recursion may run forever.
-- **No leaks.** Leak-freedom is checked where the analysis can see it (every
-  owned arena must be released or returned on every path), but it can be
-  missed at some control-flow joins. Leaks are safe, not undefined behavior —
-  Rust makes the same allowance for `mem::forget`.
+- **No leaks.** A region is released automatically at the `RET` of the function
+  that creates it, so a live region never leaks. A leak can still occur if the
+  handle is overwritten before `RET`, which the analysis may not see. Leaks are
+  safe, not undefined behavior — Rust makes the same allowance for
+  `mem::forget`.
 - **Bounded stack.** Deep recursion may overflow the machine stack; the
   verifier does not bound call depth (unlike the Linux eBPF verifier).
 
 ## The analysis, in one paragraph
 
 The verifier is an abstract interpreter over the control-flow graph. Per
-program point it tracks, for each of the 16 registers, an abstract value:
-an integer (with a signed range and width), arena handle (with reference
-identity, capacity and ownership), or data pointer (with arena, allocation
-identity and size). It also tracks the type of statically-addressed memory cells
-and the bytes allocated so far from each arena. States flow along edges and merge
-at joins (a conservative union). Conditional jumps refine integer ranges on each
-edge. Arenas are linear references: ownership is tracked and transfers are
-explicit.
+program point it tracks, for each register, an abstract value: an integer (with
+a signed range and width), arena handle (with reference identity, capacity and
+ownership), or data pointer (with arena, allocation identity and size). It also
+tracks the type of statically-addressed memory cells and the bytes allocated so
+far from each arena. States flow along edges and merge at joins (a conservative
+union). Conditional jumps refine integer ranges on each edge. A region is
+function-scoped: it is released when the function that creates it returns, and it
+cannot escape that function.
 
 ## Non-goals / known threats
 

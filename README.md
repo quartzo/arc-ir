@@ -38,8 +38,8 @@ verification and code generation stay simple and direct.
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(...)`) with interprocedural size checks | ✅ |
-| — | Non-integer returns: `-> arena`, `-> ptr(...)` | ✅ |
-| — | Arena ownership: linear references, leak/borrow checks, `own` params | ✅ |
+| — | Non-integer returns: `-> ptr(...)` | ✅ |
+| — | Function-scoped regions: a region never outlives its function; escape checks, auto-free at `RET` | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven) and growable (chunked, abort-on-OOM) | ✅ |
 | — | Base types: `f64`/`f32` floats in a separate vector register file (`v0`–`v15`) | ✅ |
@@ -175,45 +175,49 @@ array `ptr([T; N])`). The verifier checks each function independently against it
 parameter types, and at every call site checks argument types and that a pointer
 argument is at least as large as declared. Functions may recurse.
 
-A function may also declare a return type with `->` (`arena` or `ptr(...)`; the
-default is `i64`). The verifier checks the value returned at each `RET`
-against that type and gives the caller's `r0` the declared type.
+A function may also declare a return type with `->` (`ptr(...)`; the default is
+`i64`). The verifier checks the value returned at each `RET` against that type
+and gives the caller's `r0` the declared type. An `arena` cannot be returned: a
+region lives only as long as the function that creates it.
 
-## Ownership
+## Regions and lifetime
 
-Arenas are **linear resources**: `ARENA_CREATE` produces an owned reference,
-and every owned reference must be released exactly once on every path before
-the function returns. The verifier rejects leaks, destroying a borrowed arena,
-and any use of a handle or pointer after its arena has been released.
+A region is **function-scoped**: it lives at most as long as the function that
+creates it. A function may release a region early with `ARENA_DESTROY`; any
+region still owned when the function returns is released **automatically** at
+the `RET`. A region cannot escape its creating function — returning an `arena`,
+an `own` parameter, and an `arena` field are all rejected, and a pointer into a
+local region may not be stored into memory that outlives the call.
 
-- An `arena` parameter is **borrowed** by default; the callee may allocate from
-  it but not destroy it.
-- An `own arena` parameter **transfers ownership** to the callee, which must
-  then release or return it. After such a call, the caller's handle and any
-  pointers into that arena are dead.
-- Returning an `arena` transfers ownership to the caller.
+- An `arena` parameter is **borrowed**: the callee may allocate from it but not
+  release it.
+- To build data across a call, the **caller creates the region and passes it
+  down** (as an `arena` or a `ptr`). A callee can return a pointer into it,
+  because the region outlives the call.
 - Data pointers of unknown provenance (returned from a call) are conservatively
   treated as aliasing any arena.
 
-`examples/own.arc`:
+`examples/region.arc`:
 
 ```arc
 func main
-    r1 = ARENA_CREATE DRAM_LOCAL, 64
-    r2 = ARENA_ALLOC r1, 64
-    ...
-    CALL consume
-    RET r4
+    s0 = ARENA_CREATE DRAM_LOCAL, 64
+    r1 = s0
+    CALL fill
+    ARENA_DESTROY s0
+    RET
 endfunc
 
-func consume(r1: own arena)
-    ARENA_DESTROY r1
+func fill(r1: arena)
+    r2 = ARENA_ALLOC r1, [i64; 8]
+    r3 = 5
+    STORE [r2], r3
     RET
 endfunc
 ```
 
-This is what makes use-after-free across calls detectable — the case that plain
-modular type checking missed.
+Because a region never outlives its function and cannot escape it, a pointer can
+never outlive the region it points into.
 
 ## Arenas
 

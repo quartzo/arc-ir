@@ -215,8 +215,8 @@ func (k ScalarKind) IsInt() bool { return !k.Float() }
 
 // Param is a declared function parameter: a register and its type. For
 // KindPtr parameters, Size is the size of the allocation the pointer refers
-// to, which the callee's bounds checks rely on. Own marks an arena parameter
-// whose ownership is transferred to the callee; otherwise it is borrowed.
+// to, which the callee's bounds checks rely on. An arena parameter is borrowed:
+// the callee may allocate from it but not release it.
 type Param struct {
 	Reg    Register
 	Kind   ValKind
@@ -225,7 +225,6 @@ type Param struct {
 	Struct string     // KindPtr: ptr(Struct)
 	Elem   ScalarKind // KindPtr: ptr([Elem; Count])
 	Count  int64      // KindPtr: ptr([Elem; Count])
-	Own    bool
 }
 
 // OpCode enumerates the ARC instruction set.
@@ -741,11 +740,7 @@ func formatParams(params []Param) string {
 }
 
 func formatParam(p Param) string {
-	prefix := ""
-	if p.Own {
-		prefix = "own "
-	}
-	return fmt.Sprintf("%s: %s%s", p.Reg, prefix, formatParamType(p))
+	return fmt.Sprintf("%s: %s", p.Reg, formatParamType(p))
 }
 
 func formatParamType(p Param) string {

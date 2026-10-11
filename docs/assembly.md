@@ -279,8 +279,8 @@ Parameters are declared with a type: an integer (`i8`…`i64`, `u8`…`u64`),
 type of the region it points to — either a named struct (`ptr(Struct)`, see §9)
 or an array of scalar elements (`ptr([T; N])`, where `T` is `i8`…`i64`,
 `u8`…`u64`, `f32` or `f64`, and `N` is a positive element count). An `arena`
-parameter is **borrowed** unless prefixed with `own`, which transfers ownership
-to the callee (see §7):
+parameter is **borrowed**: the callee may allocate from it but not release it
+(see §7):
 
 ```
 func read(r1: ptr([i64; 8]))
@@ -297,11 +297,6 @@ may recurse.
 A function may declare a return type with `->`:
 
 ```
-func get_arena() -> arena
-    r0 = ARENA_CREATE DRAM_LOCAL, 4096
-    RET r0
-endfunc
-
 func make(r1: arena) -> ptr([i64; 8])
     r0 = ARENA_ALLOC r1, [i64; 8]
     RET r0
@@ -311,42 +306,49 @@ endfunc
 The default return type is `i64`. The verifier checks at every `RET` that
 the returned register matches the declared return type (and, for a `ptr`, that
 the target matches and the allocation is large enough and still live), and gives
-the caller's `r0` that type after the call.
+the caller's `r0` that type after the call. An `arena` cannot be returned: a
+region lives only as long as the function that creates it.
 
 A program with no `func` declaration is treated as a single entry function
 named `main`.
 
-## 7. Ownership and lifetime
+## 7. Regions and lifetime
 
-Arenas are **linear resources**. `ARENA_CREATE` produces an owned reference,
-and every owned reference must be released exactly once on every control-flow
-path before the function returns — otherwise the verifier reports a leak.
+A region is **function-scoped**: it lives at most as long as the function that
+creates it. It is released early with `ARENA_DESTROY`, and any region still
+owned when the function returns is released **automatically** at the `RET`.
 
 - `ARENA_DESTROY r` releases the arena in `r`. `r` must be an owned arena;
   destroying a borrowed arena is rejected.
 - Releasing an arena invalidates every handle and data pointer to it. Data
-  pointers whose arena provenance is unknown (e.g. returned from a call) are
-  conservatively treated as aliasing any arena and are invalidated too.
+  pointers whose arena provenance is unknown (a merge that lost the arena
+  identity, or a pointer returned from a call) are conservatively treated as
+  aliasing any arena and are invalidated too.
+- A region cannot escape its creating function: `-> arena`, `own` parameters
+  and `arena` fields are rejected, and a pointer into a local region may not be
+  stored into memory that outlives the call.
 - An `arena` parameter is borrowed: the callee may allocate from it but must
-  not destroy it. An `own arena` parameter transfers ownership to the callee,
-  which must then release or return it.
-- Returning an `arena` transfers ownership to the caller.
+  not release it. To build data across a call, the caller creates the region and
+  passes it down; a callee may return a pointer into it, because the region
+  outlives the call.
 
 ```
 func main
-    r1 = ARENA_CREATE DRAM_LOCAL, 64   ; owned here
-    CALL consume                       ; ownership moves to consume
+    s0 = ARENA_CREATE DRAM_LOCAL, 64   ; owned here
+    r1 = s0
+    CALL fill                          ; fill borrows s0
+    ARENA_DESTROY s0                   ; released here (or automatically at RET)
     RET
 endfunc
 
-func consume(r1: own arena)
-    ARENA_DESTROY r1                   ; released here
+func fill(r1: arena)
+    r2 = ARENA_ALLOC r1, [i64; 8]
     RET
 endfunc
 ```
 
-This is what makes use-after-free across calls detectable: after a call that
-consumes an arena, every handle and pointer to it becomes dead.
+Because a region never outlives its function and cannot escape it, a pointer can
+never outlive the region it points into.
 
 ## 8. Program structure
 

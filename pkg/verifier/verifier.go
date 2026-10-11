@@ -335,6 +335,7 @@ func Verify(prog *ir.Program) (*Result, error) {
 			}
 		}
 		res.Blocks += len(f.Blocks)
+		v.insertAutoFree()
 	}
 	return res, nil
 }
@@ -344,8 +345,11 @@ type Verifier struct {
 	mod            *ir.Module
 	f              *ir.Function
 	in             []*State
-	refOf          map[[2]int]int // (block, instr) -> arena RefID
-	allocOf        map[[2]int]int // (block, instr) -> allocation AllocID
+	refOf          map[[2]int]int        // (block, instr) -> arena RefID
+	allocOf        map[[2]int]int        // (block, instr) -> allocation AllocID
+	localRefs      map[int]bool          // arena refs created in this function
+	localAllocs    map[int]bool          // allocations created in this function
+	autoFree       map[int][]ir.Register // block -> arenas to release at its RET
 	nextParamRef   int
 	nextParamAlloc int
 }
@@ -356,6 +360,9 @@ type Verifier struct {
 func (v *Verifier) assignIDs() {
 	v.refOf = map[[2]int]int{}
 	v.allocOf = map[[2]int]int{}
+	v.localRefs = map[int]bool{}
+	v.localAllocs = map[int]bool{}
+	v.autoFree = map[int][]ir.Register{}
 	id := 0
 	for bi, b := range v.f.Blocks {
 		for ii, inst := range b.Instrs {
@@ -363,15 +370,12 @@ func (v *Verifier) assignIDs() {
 			switch inst.Op {
 			case ir.OpArenaCreate:
 				v.refOf[key] = id
+				v.localRefs[id] = true
 				id++
 			case ir.OpArenaAlloc:
 				v.allocOf[key] = id
+				v.localAllocs[id] = true
 				id++
-			case ir.OpCall:
-				if c := v.mod.ByName[inst.Label]; c != nil && c.RetKind == ir.KindArena {
-					v.refOf[key] = id
-					id++
-				}
 			}
 		}
 	}
@@ -396,7 +400,7 @@ func (v *Verifier) entryState() (State, error) {
 			// Capacity is unknown unless declared as arena(<size>); allocations
 			// are then bounds-checked and capacity-checked. A parameter is
 			// borrowed unless declared "own".
-			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, Owned: p.Own, AllocSize: p.Size}
+			st.Regs[p.Reg] = RegState{Defined: true, Type: TypeArena, RefID: v.nextParamRef, AllocID: -1, AllocSize: p.Size}
 			v.nextParamRef++
 		case ir.KindPtr:
 			// Provenance is unknown; treat it as possibly aliasing any arena.
@@ -431,6 +435,7 @@ func (v *Verifier) processBlock(bi int, st *State) (map[int]State, error) {
 			if err := v.checkReturn(st, inst); err != nil {
 				return nil, err
 			}
+			v.autoFree[bi] = ownedRegs(st)
 			return out, nil
 
 		case inst.Op == ir.OpJmp:
@@ -686,6 +691,9 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		if err := v.checkBounds(st, ptr, inst.Mem, inst.Width, inst); err != nil {
 			return err
 		}
+		if v.escapesLocal(src, ptr) {
+			return v.errf(inst, "cannot store a reference to a region created here into memory that outlives the function (regions are function-scoped)")
+		}
 		if ptr.Count > 0 {
 			// Array element: a float element needs the matching float type; an
 			// integer element accepts any integer (the store truncates).
@@ -900,13 +908,6 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 					return v.errf(inst, "argument %s to %s: arena capacity %d is smaller than the declared %d",
 						p.Reg, callee.Name, rs.AllocSize, p.Size)
 				}
-				if p.Own {
-					if !rs.Owned {
-						return v.errf(inst, "argument %s to %s: cannot transfer a borrowed arena",
-							p.Reg, callee.Name)
-					}
-					v.release(st, rs.RefID)
-				}
 			}
 		}
 		// A call destroys every scratch register: scratch is volatile. Vector
@@ -922,8 +923,6 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		}
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
-		case ir.KindArena:
-			st.Regs[0] = RegState{Defined: true, Type: TypeArena, RefID: ref, AllocID: -1, Owned: true, AllocSize: callee.RetSize}
 		case ir.KindPtr:
 			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, Foreign: true, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
 		default:
@@ -1439,6 +1438,26 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 	return rs, nil
 }
 
+// escapesLocal reports whether storing src into the allocation that dst points
+// to would let a reference to a region created in this function outlive it. A
+// region created here dies at RET, so storing such a reference into memory that
+// survives the function would leave it dangling.
+func (v *Verifier) escapesLocal(src, dst *RegState) bool {
+	local := false
+	switch src.Type {
+	case TypeArena, TypeDataPtr:
+		local = src.RefID == -1 || v.localRefs[src.RefID]
+	default:
+		return false
+	}
+	if !local {
+		return false
+	}
+	// The destination outlives the function unless it is an allocation created
+	// here (which dies with the function).
+	return dst.AllocID == -1 || !v.localAllocs[dst.AllocID]
+}
+
 // enumPtr fetches a register that holds a pointer to an enum.
 func (v *Verifier) enumPtr(st *State, r ir.Register, inst ir.Instruction) (*RegState, error) {
 	rs, err := v.dataPtr(st, r, inst)
@@ -1512,9 +1531,8 @@ func (v *Verifier) release(st *State, refID int) {
 }
 
 // checkReturn verifies a RET: the returned value matches the declared return
-// type, and every owned arena has been released or is being returned.
+// type. Owned arenas are released automatically at RET (see ownedRegs).
 func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
-	returnedRef := -1
 	if inst.Src[0].Valid() {
 		rs, err := v.defined(st, inst.Src[0], inst)
 		if err != nil {
@@ -1529,15 +1547,6 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 				return v.errf(inst, "returning %s, but function %s declares return type %s",
 					rs.Type, v.f.Name, v.f.RetScalar)
 			}
-		case ir.KindArena:
-			if rs.Type != TypeArena {
-				return v.errf(inst, "returning %s, but function %s declares return type %s",
-					rs.Type, v.f.Name, v.f.RetKind)
-			}
-			if !rs.Owned {
-				return v.errf(inst, "function %s cannot return borrowed arena %s", v.f.Name, inst.Src[0])
-			}
-			returnedRef = rs.RefID
 		case ir.KindPtr:
 			if rs.Type != TypeDataPtr {
 				return v.errf(inst, "returning %s, but function %s declares return type %s",
@@ -1554,15 +1563,51 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 	} else if v.f.RetKind != ir.KindScalar {
 		return v.errf(inst, "function %s returns %s but RET has no value", v.f.Name, v.f.RetKind)
 	}
+	return nil
+}
 
-	// Every owned arena must be released or returned: no leaks.
+// ownedRegs returns the registers that hold an owned, still-live arena at a
+// RET. They are released automatically when the function returns: a region
+// lives at most as long as the function that creates it.
+func ownedRegs(st *State) []ir.Register {
+	var out []ir.Register
 	for r := 0; r < ir.NumRegs; r++ {
 		rs := st.Regs[r]
-		if rs.Defined && rs.Owned && rs.Type == TypeArena && !rs.Destroyed && rs.RefID != returnedRef {
-			return v.errf(inst, "arena %s is never released (leaked)", ir.Register(r))
+		if rs.Defined && rs.Owned && rs.Type == TypeArena && !rs.Destroyed {
+			out = append(out, ir.Register(r))
 		}
 	}
-	return nil
+	return out
+}
+
+// insertAutoFree appends the automatic releases computed at each RET, so the
+// generated code frees every region a function still owns when it returns.
+func (v *Verifier) insertAutoFree() {
+	for bi, regs := range v.autoFree {
+		if len(regs) == 0 {
+			continue
+		}
+		b := v.f.Blocks[bi]
+		ri := -1
+		for i := len(b.Instrs) - 1; i >= 0; i-- {
+			if b.Instrs[i].Op == ir.OpRet {
+				ri = i
+				break
+			}
+		}
+		if ri < 0 {
+			continue
+		}
+		ds := make([]ir.Instruction, 0, len(regs))
+		for _, r := range regs {
+			inst := ir.Instruction{Op: ir.OpArenaDestroy, Line: b.Instrs[ri].Line}
+			inst.Src = [2]ir.Register{r, ir.NoReg}
+			inst.Mem.Base = ir.NoReg
+			inst.Mem.Index = ir.NoReg
+			ds = append(ds, inst)
+		}
+		b.Instrs = append(b.Instrs[:ri], append(ds, b.Instrs[ri:]...)...)
+	}
 }
 
 func (v *Verifier) errf(inst ir.Instruction, format string, args ...any) error {

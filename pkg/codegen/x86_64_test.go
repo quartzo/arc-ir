@@ -181,8 +181,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    RET r0\n" +
 			"endfunc\n", "42"},
 		{"ret_ptr", "func main\n" +
-			"    CALL get_arena\n" +
-			"    s0 = r0\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
 			"    r1 = s0\n" +
 			"    CALL make\n" +
 			"    r2 = r0\n" +
@@ -192,10 +191,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r4\n" +
 			"    ARENA_DESTROY s0\n" +
 			"    RET r4\n" +
-			"endfunc\n" +
-			"func get_arena() -> arena\n" +
-			"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-			"    RET r0\n" +
 			"endfunc\n" +
 			"func make(r1: arena) -> ptr([i64; 8])\n" +
 			"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -240,6 +235,15 @@ func TestCompileAndRun(t *testing.T) {
 			"    ARENA_DESTROY r1\n" +
 			"    RET r5\n" +
 			"endfunc\n", "77"},
+		{"auto_free", "func main\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r1 = ARENA_ALLOC s0, [i64; 8]\n" +
+			"    r2 = 42\n" +
+			"    STORE [r1], r2\n" +
+			"    r3 = LOAD [r1]\n" +
+			"    PRINT r3\n" +
+			"    RET r3\n" +
+			"endfunc\n", "42"},
 		{"float", "func main\n" +
 			"    v1 = 2.5\n" +
 			"    v2 = 4.0\n" +

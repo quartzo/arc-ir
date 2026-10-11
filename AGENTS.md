@@ -69,5 +69,5 @@ examples/        valid and invalid .arc programs
 ## Current status
 
 See the table in [`README.md`](README.md). In short: flat IR, eBPF-style
-verifier (ranges, typed memory, linear arena ownership, cumulative capacity),
+verifier (ranges, typed memory, function-scoped regions, cumulative capacity),
 parser, x86_64 backend, C runtime, CLI, docs.

@@ -358,6 +358,9 @@ func parseField(c *cursor, lineNo int) (ir.Field, error) {
 	if err != nil {
 		return ir.Field{}, err
 	}
+	if spec.kind == ir.KindArena {
+		return ir.Field{}, fmt.Errorf("line %d: an arena field is not supported: handles live only in registers", lineNo)
+	}
 	return ir.Field{
 		Name:   fname,
 		Type:   spec.kind,
@@ -740,17 +743,12 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 			if err := c.expect(":"); err != nil {
 				return ir.Instruction{}, err
 			}
-			own := false
 			if c.peek() == "own" {
-				own = true
-				c.pos++
+				return ir.Instruction{}, fmt.Errorf("line %d: 'own' is not supported: a region lives only as long as the function that creates it", lineNo)
 			}
 			spec, err := parseTypeSpec(c, lineNo)
 			if err != nil {
 				return ir.Instruction{}, err
-			}
-			if own && spec.kind != ir.KindArena {
-				return ir.Instruction{}, fmt.Errorf("line %d: 'own' is only valid for arena parameters", lineNo)
 			}
 			if spec.kind == ir.KindScalar && spec.scalar.Float() {
 				return ir.Instruction{}, fmt.Errorf("line %d: float parameters are not supported (pass a ptr instead)", lineNo)
@@ -763,7 +761,6 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 				Struct: spec.structName,
 				Elem:   spec.elem,
 				Count:  spec.count,
-				Own:    own,
 			}
 			inst.Params = append(inst.Params, param)
 			if c.peek() == "," {
@@ -785,6 +782,9 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 		}
 		if spec.kind == ir.KindScalar && spec.scalar.Float() {
 			return ir.Instruction{}, fmt.Errorf("line %d: float return types are not supported", lineNo)
+		}
+		if spec.kind == ir.KindArena {
+			return ir.Instruction{}, fmt.Errorf("line %d: an arena cannot be returned: a region lives only as long as the function that creates it (pass a region down instead)", lineNo)
 		}
 		inst.RetKind = spec.kind
 		inst.RetScalar = spec.scalar
