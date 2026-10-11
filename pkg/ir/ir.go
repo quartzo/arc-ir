@@ -456,6 +456,10 @@ type Instruction struct {
 	RetStruct string
 	RetElem   ScalarKind
 	RetCount  int64
+	// RetReg names the parameter whose region the returned pointer lives in
+	// (OpFunc only, pointer returns only). It is the argument register declared
+	// with the region annotation "-> r1: ptr(...)"; NoReg means "no region".
+	RetReg Register
 
 	// Inline marks a function (OpFunc only) that the backend should inline at
 	// every call site.
@@ -777,10 +781,14 @@ func formatParamType(p Param) string {
 }
 
 func formatRet(i Instruction) string {
+	prefix := ""
+	if i.RetKind == KindPtr && i.RetReg.Valid() {
+		prefix = i.RetReg.String() + ": "
+	}
 	switch i.RetKind {
 	case KindPtr:
 		p := Param{Kind: KindPtr, Size: i.RetSize, Struct: i.RetStruct, Elem: i.RetElem, Count: i.RetCount}
-		return " -> " + formatParamType(p)
+		return " -> " + prefix + formatParamType(p)
 	case KindArena:
 		if i.RetSize > 0 {
 			return fmt.Sprintf(" -> arena(%d)", i.RetSize)

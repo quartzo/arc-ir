@@ -359,6 +359,7 @@ type Verifier struct {
 	localRefs      map[int]bool          // arena refs created in this function
 	localAllocs    map[int]bool          // allocations created in this function
 	stackRefs      map[int]bool          // stack-backed arena refs (created here or borrowed as a stack parameter): inline, never freed
+	paramRef       map[ir.Register]int   // parameter register -> its region RefID
 	autoFree       map[int][]ir.Register // block -> arenas to release at its RET
 	nextParamRef   int
 	nextParamAlloc int
@@ -373,6 +374,7 @@ func (v *Verifier) assignIDs() {
 	v.localRefs = map[int]bool{}
 	v.localAllocs = map[int]bool{}
 	v.stackRefs = map[int]bool{}
+	v.paramRef = map[ir.Register]int{}
 	v.autoFree = map[int][]ir.Register{}
 	id := 0
 	for bi, b := range v.f.Blocks {
@@ -420,6 +422,7 @@ func (v *Verifier) entryState() (State, error) {
 			if p.Stack {
 				v.stackRefs[v.nextParamRef] = true
 			}
+			v.paramRef[p.Reg] = v.nextParamRef
 			v.nextParamRef++
 		case ir.KindPtr:
 			// A pointer parameter points into a region that outlives the call
@@ -427,6 +430,7 @@ func (v *Verifier) entryState() (State, error) {
 			// returned or stored. It also gets its own allocation view so its
 			// cells can be typed inside the callee.
 			ref := v.nextParamRef
+			v.paramRef[p.Reg] = ref
 			v.nextParamRef++
 			alloc := v.nextParamAlloc
 			v.nextParamAlloc++
@@ -960,6 +964,15 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 				}
 			}
 		}
+		// The returned pointer lives in the region of the argument named by the
+		// callee's return region, so the caller knows it exactly. Capture it
+		// before the call clobbers the argument registers.
+		retRef := -1
+		if callee.RetKind == ir.KindPtr && callee.RetReg.Valid() {
+			if rs := st.Regs[callee.RetReg]; rs.Type == TypeArena || rs.Type == TypeDataPtr {
+				retRef = rs.RefID
+			}
+		}
 		// A call destroys every scratch register: scratch is volatile. Vector
 		// registers are volatile too. The preserved registers survive (the callee
 		// saves the ones it writes).
@@ -974,7 +987,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 		// The return value is delivered in r0 with the callee's declared type.
 		switch callee.RetKind {
 		case ir.KindPtr:
-			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: -1, AllocID: -1, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
+			st.Regs[0] = RegState{Defined: true, Type: TypeDataPtr, RefID: retRef, AllocID: -1, AllocSize: callee.RetSize, Struct: callee.RetStruct, Elem: callee.RetElem, Count: callee.RetCount, Variant: -1}
 		default:
 			t := scalarRegType(callee.RetScalar)
 			lo, hi := intRange(t)
@@ -1578,8 +1591,12 @@ func (v *Verifier) checkReturn(st *State, inst ir.Instruction) error {
 				return v.errf(inst, "returning %s, but function %s declares return type %s",
 					rs.Type, v.f.Name, v.f.RetKind)
 			}
-			if rs.RefID == -1 || v.localRefs[rs.RefID] {
-				return v.errf(inst, "cannot return %s: it may point into a region created here, which does not outlive the function", inst.Src[0])
+			want, ok := v.paramRef[v.f.RetReg]
+			if !ok {
+				return v.errf(inst, "function %s returns a pointer but names no region parameter", v.f.Name)
+			}
+			if rs.RefID != want {
+				return v.errf(inst, "cannot return %s: it does not point into the region of %s, the declared return region", inst.Src[0], v.f.RetReg)
 			}
 			if v.f.RetStruct != "" && rs.Struct != v.f.RetStruct {
 				return v.errf(inst, "function %s must return a %s pointer", v.f.Name, v.f.RetStruct)

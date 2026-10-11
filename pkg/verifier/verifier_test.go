@@ -285,12 +285,14 @@ func TestVerifyFunctionRejections(t *testing.T) {
 			// caller taints r0 as a live pointer: dereferencing it would be a
 			// null dereference. This must be rejected.
 			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r1 = s0\n" +
 				"    CALL f\n" +
-				"    r1 = LOAD [r0]\n" +
+				"    r2 = LOAD [r0]\n" +
 				"    RET\n" +
 				"endfunc\n" +
-				"func f() -> ptr([i64; 8])\n" +
-				"    r1 = 1\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
+				"    r2 = 1\n" +
 				"endfunc\n",
 			"may fall off its end",
 		},
@@ -414,7 +416,7 @@ func TestVerifyReturnedStructField(t *testing.T) {
 		"    PRINT r3\n" +
 		"    RET\n" +
 		"endfunc\n" +
-		"func make(r1: arena) -> ptr(Node)\n" +
+		"func make(r1: arena) -> r1: ptr(Node)\n" +
 		"    r0 = ARENA_ALLOC r1, Node\n" +
 		"    r3 = ARENA_ALLOC r1, Node\n" +
 		"    r4 = 7\n" +
@@ -443,7 +445,7 @@ func TestVerifyNonScalarReturns(t *testing.T) {
 		"    PRINT r4\n" +
 		"    RET r4\n" +
 		"endfunc\n" +
-		"func make(r1: arena) -> ptr([i64; 8])\n" +
+		"func make(r1: arena) -> r1: ptr([i64; 8])\n" +
 		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET r0\n" +
 		"endfunc\n"
@@ -462,7 +464,7 @@ func TestVerifyPathSensitiveProvenance(t *testing.T) {
 		"    CALL pick\n" +
 		"    RET\n" +
 		"endfunc\n" +
-		"func pick(r1: arena) -> ptr([i64; 8])\n" +
+		"func pick(r1: arena) -> r1: ptr([i64; 8])\n" +
 		"    r3 = 0\n" +
 		"    JEQ r3, 0, b\n" +
 		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -470,6 +472,29 @@ func TestVerifyPathSensitiveProvenance(t *testing.T) {
 		"b:\n" +
 		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"done:\n" +
+		"    RET r0\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, src)); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
+func TestVerifyReturnRegionForwarding(t *testing.T) {
+	// The caller knows the returned pointer's region exactly, so a function may
+	// forward a pointer that a callee returned into one of its own region
+	// parameters.
+	src := "func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r1 = s0\n" +
+		"    CALL outer\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func outer(r1: arena) -> r1: ptr([i64; 8])\n" +
+		"    CALL make\n" +
+		"    RET r0\n" +
+		"endfunc\n" +
+		"func make(r1: arena) -> r1: ptr([i64; 8])\n" +
+		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET r0\n" +
 		"endfunc\n"
 	if _, err := Verify(mustParse(t, src)); err != nil {
@@ -486,11 +511,12 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"wrong return type",
 			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r1 = s0\n" +
 				"    CALL f\n" +
-				"    r1 = 0\n" +
-				"    RET r1\n" +
+				"    RET\n" +
 				"endfunc\n" +
-				"func f() -> ptr([i64; 8])\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
 				"    r0 = 5\n" +
 				"    RET r0\n" +
 				"endfunc\n",
@@ -505,7 +531,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 				"    r1 = 0\n" +
 				"    RET r1\n" +
 				"endfunc\n" +
-				"func f(r1: arena) -> ptr([i64; 8])\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
 				"    r0 = ARENA_ALLOC r1, [i64; 2]\n" +
 				"    RET r0\n" +
 				"endfunc\n",
@@ -514,11 +540,12 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"bare RET for non-scalar",
 			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r1 = s0\n" +
 				"    CALL f\n" +
-				"    r1 = 0\n" +
-				"    RET r1\n" +
+				"    RET\n" +
 				"endfunc\n" +
-				"func f() -> ptr([i64; 8])\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
 				"    RET\n" +
 				"endfunc\n",
 			"RET has no value",
@@ -526,22 +553,24 @@ func TestVerifyReturnRejections(t *testing.T) {
 		{
 			"return a pointer into a local region",
 			"func main -> i64\n" +
-				"    r1 = 0\n" +
-				"    RET r1\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r1 = s0\n" +
+				"    CALL f\n" +
+				"    RET\n" +
 				"endfunc\n" +
-				"func f() -> ptr([i64; 8])\n" +
-				"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
+				"    r2 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r0 = ARENA_ALLOC r2, [i64; 8]\n" +
 				"    RET r0\n" +
 				"endfunc\n",
-			"does not outlive the function",
+			"does not point into the region of",
 		},
 		{
 			// Conservative limitation: when the two paths point into *different*
 			// caller-owned arenas the merge gives unknown provenance, so the
 			// pointer is rejected. A provenance set (not a single arena id)
 			// would accept it; see the roadmap.
-			"merged pointer from two borrowed arenas",
+			"return does not name the region it points into",
 			"func main -> i64\n" +
 				"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
 				"    r1 = s0\n" +
@@ -549,7 +578,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 				"    CALL pick\n" +
 				"    RET\n" +
 				"endfunc\n" +
-				"func pick(r1: arena, r2: arena) -> ptr([i64; 8])\n" +
+				"func pick(r1: arena, r2: arena) -> r1: ptr([i64; 8])\n" +
 				"    r3 = 0\n" +
 				"    JEQ r3, 0, b\n" +
 				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -559,7 +588,26 @@ func TestVerifyReturnRejections(t *testing.T) {
 				"done:\n" +
 				"    RET r0\n" +
 				"endfunc\n",
-			"does not outlive the function",
+			"does not point into the region of",
+		},
+		{
+			"forward a pointer from the wrong region",
+			"func main -> i64\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 128\n" +
+				"    r1 = s0\n" +
+				"    r2 = s0\n" +
+				"    CALL outer\n" +
+				"    RET\n" +
+				"endfunc\n" +
+				"func outer(r1: arena, r2: arena) -> r1: ptr([i64; 8])\n" +
+				"    CALL make2\n" +
+				"    RET r0\n" +
+				"endfunc\n" +
+				"func make2(r1: arena, r2: arena) -> r2: ptr([i64; 8])\n" +
+				"    r0 = ARENA_ALLOC r2, [i64; 8]\n" +
+				"    RET r0\n" +
+				"endfunc\n",
+			"does not point into the region of",
 		},
 	}
 	for _, tc := range cases {
@@ -930,12 +978,12 @@ func TestVerifyStackArena(t *testing.T) {
 			"func main -> i64\n" +
 				"    RET\n" +
 				"endfunc\n" +
-				"func f(r1: arena) -> ptr([i64; 8])\n" +
-				"    r1 = ARENA_CREATE STACK, 64\n" +
-				"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
+				"func f(r1: arena) -> r1: ptr([i64; 8])\n" +
+				"    r2 = ARENA_CREATE STACK, 64\n" +
+				"    r0 = ARENA_ALLOC r2, [i64; 8]\n" +
 				"    RET r0\n" +
 				"endfunc\n",
-			"does not outlive",
+			"does not point into the region of",
 		},
 	}
 	for _, tc := range cases {
@@ -960,7 +1008,7 @@ func TestVerifyStackParam(t *testing.T) {
 		"    CALL fill\n" +
 		"    RET\n" +
 		"endfunc\n" +
-		"func fill(r1: stack(64)) -> ptr([i64; 8])\n" +
+		"func fill(r1: stack(64)) -> r1: ptr([i64; 8])\n" +
 		"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 		"    RET r0\n" +
 		"endfunc\n"

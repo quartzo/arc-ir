@@ -134,7 +134,7 @@ func TestParsePtrParam(t *testing.T) {
 }
 
 func TestParseReturnType(t *testing.T) {
-	src := "func g() -> ptr([i64; 8])\n" +
+	src := "func g(r1: arena) -> r1: ptr([i64; 8])\n" +
 		"    RET\n" +
 		"endfunc\n" +
 		"func h() -> i64\n" +
@@ -144,8 +144,8 @@ func TestParseReturnType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if g := prog.Instrs[0]; g.RetKind != ir.KindPtr || g.RetSize != 64 {
-		t.Errorf("g return = %v/%d", g.RetKind, g.RetSize)
+	if g := prog.Instrs[0]; g.RetKind != ir.KindPtr || g.RetSize != 64 || g.RetReg != 1 {
+		t.Errorf("g return = %v/%d/%v", g.RetKind, g.RetSize, g.RetReg)
 	}
 	if h := prog.Instrs[2]; h.RetKind != ir.KindScalar {
 		t.Errorf("h return = %v", h.RetKind)
@@ -470,6 +470,10 @@ func TestParseErrors(t *testing.T) {
 			"endstruct\n", "arena field is not supported"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
+		{"pointer return without region", "func f(r1: arena) -> ptr([i64; 8])\n    RET\nendfunc\n", "must name its region parameter"},
+		{"region on scalar return", "func f(r1: arena) -> r1: i64\n    RET\nendfunc\n", "only a pointer return may name a region"},
+		{"region is not a parameter", "func f(r1: arena) -> r2: ptr([i64; 8])\n    RET\nendfunc\n", "not an arena or pointer parameter"},
+		{"region names a scalar parameter", "func f(r1: i64, r2: arena) -> r1: ptr([i64; 8])\n    RET\nendfunc\n", "not an arena or pointer parameter"},
 		{"missing return type", "func f\n    RET\nendfunc\n", "must declare a return type"},
 		{"missing return type with params", "func f(r1: i64)\n    RET r1\nendfunc\n", "must declare a return type"},
 		{"missing return type inline", "inline func f(r1: i64)\n    RET r1\nendfunc\n", "must declare a return type"},

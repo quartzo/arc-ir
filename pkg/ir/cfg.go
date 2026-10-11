@@ -21,6 +21,7 @@ type Function struct {
 	RetStruct string
 	RetElem   ScalarKind
 	RetCount  int64
+	RetReg    Register // region parameter for a pointer return (NoReg = none)
 	Blocks    []*Block
 	Index     map[string]int // local label -> block index
 	Succs     [][]int
@@ -57,7 +58,7 @@ func BuildModule(p *Program) (*Module, error) {
 		if _, dup := m.ByName[r.name]; dup {
 			return nil, fmt.Errorf("duplicate function %q", r.name)
 		}
-		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, Index: map[string]int{}, Inline: r.inline, instrs: r.instrs}
+		f := &Function{Name: r.name, Params: r.params, RetKind: r.retKind, RetScalar: r.retScalar, RetSize: r.retSize, RetStruct: r.retStruct, RetElem: r.retElem, RetCount: r.retCount, RetReg: r.retReg, Index: map[string]int{}, Inline: r.inline, instrs: r.instrs}
 		m.ByName[r.name] = f
 		m.Funcs = append(m.Funcs, f)
 	}
@@ -104,6 +105,7 @@ type rawFunc struct {
 	retStruct string
 	retElem   ScalarKind
 	retCount  int64
+	retReg    Register
 	inline    bool
 	instrs    []Instruction
 }
@@ -124,6 +126,7 @@ func splitFunctions(p *Program) ([]rawFunc, error) {
 				retStruct: inst.RetStruct,
 				retElem:   inst.RetElem,
 				retCount:  inst.RetCount,
+				retReg:    inst.RetReg,
 				inline:    inst.Inline,
 			})
 			cur = len(funcs) - 1

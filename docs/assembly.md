@@ -314,19 +314,30 @@ types, and at every call site that the argument registers have the declared
 types and that a pointer argument is at least as large as declared. Functions
 may recurse.
 
-A function declares its return type with `->` (the declaration is required):
+A function declares its return type with `->` (the declaration is required).
+A **pointer return** must also name the parameter whose region it lives in,
+written `-> rK: ptr(...)`:
 
 ```
-func make(r1: arena) -> ptr([i64; 8])
+func make(r1: arena) -> r1: ptr([i64; 8])
     r0 = ARENA_ALLOC r1, [i64; 8]
     RET r0
 endfunc
 ```
 
+`rK` is a parameter of kind `arena` or `ptr`; the returned pointer must point
+into exactly that region (so the caller, which chose what to pass, knows the
+result's region exactly). If the data lives in another region, the function must
+copy it into the named one first. A scalar return has no region:
+
+```
+func add(r1: i64, r2: i64) -> i64
+```
+
 The verifier checks at every `RET` that the returned register matches the
-declared return type (and, for a `ptr`, that the target matches and the
-allocation is large enough and still live), and gives the caller's `r0` that
-type after the call. Every function must end its last block with an explicit
+declared return type (and, for a `ptr`, that it points into the named region,
+that the target matches, and that the allocation is large enough), and gives the
+caller's `r0` that type and region after the call. Every function must end its last block with an explicit
 terminator (`RET`, or `JMP` for a function that never returns). A body that
 *falls off its end* is rejected: the synthesised return would otherwise hand the
 caller a bogus value (0 typed as a live `ptr`), which dereferencing could follow
@@ -383,7 +394,7 @@ never outlive the region it points into.
 ```
 program    := { top }
 top        := function | structdef | enumdef
-function   := [ "inline" ] "func" ident [ "(" params ")" ] "->" type { instruction } "endfunc"
+function   := [ "inline" ] "func" ident [ "(" params ")" ] "->" [ register ":" ] type { instruction } "endfunc"
 structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
 enumdef    := "enum" ident { variant } "endenum"
 field      := ident ":" type

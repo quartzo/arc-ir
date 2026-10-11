@@ -16,7 +16,7 @@ where a word crosses a boundary where the flow of meaning is interrupted needs
 an annotation to re-establish it:
 
 1. a **function argument** — `r1: ptr([i64; 8])`, `r1: ptr(Node)`, `r1: arena`;
-2. a **function return** — `-> ptr([i64; 8])`;
+2. a **function return** — `-> r1: ptr([i64; 8])`;
 3. **memory** — a statically-addressed cell remembers the type stored in it.
 
 The product is the verifier, not the ISA. The ISA is trivial on purpose.

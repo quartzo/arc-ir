@@ -120,7 +120,7 @@ Proposed:
 ```
 program    := { top }
 top        := function | structdef | enumdef
-function   := "func" ident [ "(" params ")" ] "->" type { instruction } "endfunc"
+function   := "func" ident [ "(" params ")" ] "->" [ register ":" ] type { instruction } "endfunc"
 structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
 enumdef    := "enum" ident { variant } "endenum"
 field      := ident ":" type

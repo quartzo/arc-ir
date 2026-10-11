@@ -38,7 +38,7 @@ verification and code generation stay simple and direct.
 | — | Control flow: jumps, branches, loops | ✅ (with range refinement) |
 | — | Functions: `CALL`/`RET`, recursion, args in `r1`–`r4` | ✅ |
 | — | Pointer parameters (`ptr(...)`) with interprocedural size checks | ✅ |
-| — | Non-integer returns: `-> ptr(...)` | ✅ |
+| — | Non-integer returns: `-> rK: ptr(...)`, region-named | ✅ |
 | — | Function-scoped regions: a region never outlives its function; escape checks, auto-free at `RET` | ✅ |
 | — | Typed memory cells: pointers survive a `STORE`/`LOAD` round-trip | ✅ |
 | — | Arena modes: fixed (capacity proven), growable (chunked, abort-on-OOM), and stack (frame-backed, inline) | ✅ |
@@ -178,12 +178,16 @@ Functions may recurse. A `stack(size)` parameter borrows a stack arena from the
 caller with a budget of `size` bytes: only a stack arena matches, and the caller
 must have that much room left (which it accounts for when the call returns).
 
-Every function declares its return type with `->` (required; e.g. `-> i64` or
-`-> ptr(...)`). The verifier checks the value returned at each `RET` against that
-type and gives the caller's `r0` the declared type. Every function must end its
-last block with an explicit terminator (`RET`, or `JMP` for a function that never
-returns); a body that falls off its end is rejected. An `arena` cannot be
-returned: a region lives only as long as the function that creates it.
+Every function declares its return type with `->` (required; e.g. `-> i64`).
+A pointer return also names the parameter whose region it lives in, as
+`-> rK: ptr(...)`; the returned pointer must point into exactly that region, so
+the caller knows the result's region precisely. Data in another region must be
+copied into the named one first. The verifier checks the value returned at each
+`RET` against that type and region and gives the caller's `r0` the declared type
+and region. Every function must end its last block with an explicit terminator
+(`RET`, or `JMP` for a function that never returns); a body that falls off its
+end is rejected. An `arena` cannot be returned: a region lives only as long as
+the function that creates it.
 
 A function marked `inline func` is expanded at each call site by the backend,
 when it uses no preserved registers, so a loop body can be delegated to a

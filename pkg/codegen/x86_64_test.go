@@ -227,7 +227,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r4\n" +
 			"    RET r4\n" +
 			"endfunc\n" +
-			"func make(r1: arena) -> ptr([i64; 8])\n" +
+			"func make(r1: arena) -> r1: ptr([i64; 8])\n" +
 			"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 			"    RET r0\n" +
 			"endfunc\n", "99"},
@@ -314,7 +314,7 @@ func TestCompileAndRun(t *testing.T) {
 			"    PRINT r2\n" +
 			"    RET r2\n" +
 			"endfunc\n" +
-			"func fill(r1: stack(64)) -> ptr([i64; 8])\n" +
+			"func fill(r1: stack(64)) -> r1: ptr([i64; 8])\n" +
 			"    r0 = ARENA_ALLOC r1, [i64; 8]\n" +
 			"    r3 = 77\n" +
 			"    STORE [r0], r3\n" +

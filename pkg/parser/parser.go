@@ -806,6 +806,20 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 		return ir.Instruction{}, fmt.Errorf("line %d: function %s must declare a return type, e.g. \"-> i64\"", lineNo, name)
 	}
 	c.pos += 2
+	// A pointer return names the parameter whose region it lives in:
+	// "-> r1: ptr(...)". The region parameter is written as a register (the
+	// parameter identity), not as a separate name.
+	retReg := ir.NoReg
+	if isRegister(c.peek()) && c.peekAt(1) == ":" {
+		r, err := c.reg(lineNo)
+		if err != nil {
+			return ir.Instruction{}, err
+		}
+		retReg = r
+		if err := c.expect(":"); err != nil {
+			return ir.Instruction{}, err
+		}
+	}
 	spec, err := parseTypeSpec(c, lineNo)
 	if err != nil {
 		return ir.Instruction{}, err
@@ -816,12 +830,23 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 	if spec.kind == ir.KindArena {
 		return ir.Instruction{}, fmt.Errorf("line %d: an arena cannot be returned: a region lives only as long as the function that creates it (pass a region down instead)", lineNo)
 	}
+	if spec.kind == ir.KindPtr {
+		if !retReg.Valid() {
+			return ir.Instruction{}, fmt.Errorf("line %d: a pointer return must name its region parameter, e.g. \"-> r1: ptr(...)\"", lineNo)
+		}
+		if !isRegionParam(inst.Params, retReg) {
+			return ir.Instruction{}, fmt.Errorf("line %d: return region %s is not an arena or pointer parameter", lineNo, retReg)
+		}
+	} else if retReg.Valid() {
+		return ir.Instruction{}, fmt.Errorf("line %d: only a pointer return may name a region parameter", lineNo)
+	}
 	inst.RetKind = spec.kind
 	inst.RetScalar = spec.scalar
 	inst.RetStruct = spec.structName
 	inst.RetElem = spec.elem
 	inst.RetCount = spec.count
 	inst.RetSize = spec.size
+	inst.RetReg = retReg
 
 	if err := noTrailing(c); err != nil {
 		return ir.Instruction{}, err
@@ -1387,6 +1412,17 @@ func parseRegister(tok string, lineNo int) (ir.Register, error) {
 		}
 		return ir.Register(ir.NumGP + n), nil
 	}
+}
+
+// isRegionParam reports whether reg is a declared parameter of kind arena or
+// pointer, i.e. one that carries a region a pointer return may name.
+func isRegionParam(params []ir.Param, reg ir.Register) bool {
+	for _, p := range params {
+		if p.Reg == reg && (p.Kind == ir.KindArena || p.Kind == ir.KindPtr) {
+			return true
+		}
+	}
+	return false
 }
 
 func isRegister(tok string) bool {

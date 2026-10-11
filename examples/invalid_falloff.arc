@@ -8,6 +8,6 @@ func main -> i64
     RET
 endfunc
 
-func make -> ptr([i64; 8])
+func make(r1: arena) -> r1: ptr([i64; 8])
     r1 = 1
 endfunc

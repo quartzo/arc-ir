@@ -73,8 +73,8 @@ func TestFuncString(t *testing.T) {
 	if got, want := scalar.String(), "func f() -> i64:"; got != want {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
-	ptr := Instruction{Op: OpFunc, Label: "g", RetKind: KindPtr, RetElem: I64, RetCount: 8, RetSize: 64}
-	if got, want := ptr.String(), "func g() -> ptr([i64; 8]):"; got != want {
+	ptr := Instruction{Op: OpFunc, Label: "g", RetKind: KindPtr, RetElem: I64, RetCount: 8, RetSize: 64, RetReg: 1}
+	if got, want := ptr.String(), "func g() -> r1: ptr([i64; 8]):"; got != want {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
