@@ -357,7 +357,6 @@ type Verifier struct {
 	refOf          map[[2]int]int        // (block, instr) -> arena RefID
 	allocOf        map[[2]int]int        // (block, instr) -> allocation AllocID
 	localRefs      map[int]bool          // arena refs created in this function
-	localAllocs    map[int]bool          // allocations created in this function
 	stackRefs      map[int]bool          // stack-backed arena refs (created here or borrowed as a stack parameter): inline, never freed
 	paramRef       map[ir.Register]int   // parameter register -> its region RefID
 	autoFree       map[int][]ir.Register // block -> arenas to release at its RET
@@ -372,7 +371,6 @@ func (v *Verifier) assignIDs() {
 	v.refOf = map[[2]int]int{}
 	v.allocOf = map[[2]int]int{}
 	v.localRefs = map[int]bool{}
-	v.localAllocs = map[int]bool{}
 	v.stackRefs = map[int]bool{}
 	v.paramRef = map[ir.Register]int{}
 	v.autoFree = map[int][]ir.Register{}
@@ -390,7 +388,6 @@ func (v *Verifier) assignIDs() {
 				id++
 			case ir.OpArenaAlloc:
 				v.allocOf[key] = id
-				v.localAllocs[id] = true
 				id++
 			}
 		}
@@ -725,7 +722,7 @@ func (v *Verifier) apply(inst ir.Instruction, st *State, ref, alloc int) error {
 			return err
 		}
 		if v.escapesLocal(src, ptr) {
-			return v.errf(inst, "cannot store a reference to a region created here into memory that outlives the function (regions are function-scoped)")
+			return v.errf(inst, "cannot store a reference into a region that does not outlive the destination (regions are function-scoped; copy it into the destination region instead)")
 		}
 		if ptr.Count > 0 {
 			// Array element: a float element needs the matching float type; an
@@ -1509,19 +1506,24 @@ func (v *Verifier) dataPtr(st *State, r ir.Register, inst ir.Instruction) (*RegS
 // region created here dies at RET, so storing such a reference into memory that
 // survives the function would leave it dangling.
 func (v *Verifier) escapesLocal(src, dst *RegState) bool {
-	local := false
 	switch src.Type {
 	case TypeArena, TypeDataPtr:
-		local = src.RefID == -1 || v.localRefs[src.RefID]
 	default:
 		return false
 	}
-	if !local {
+	// Storing src into memory of region D needs src's region to outlive D (src
+	// must die no earlier than D). The only order known without a declaration
+	// is: a region created here dies at RET, and a parameter region outlives the
+	// function. Two distinct parameter regions are incomparable.
+	//
+	// If D is a region created here, it dies first, so anything is fine.
+	if dst.RefID != -1 && v.localRefs[dst.RefID] {
 		return false
 	}
-	// The destination outlives the function unless it is an allocation created
-	// here (which dies with the function).
-	return dst.AllocID == -1 || !v.localAllocs[dst.AllocID]
+	// D outlives the function (a parameter region) or is unknown: src must be
+	// the very same region. A local or unknown src, or another parameter's
+	// region, would leave a dangling reference.
+	return src.RefID == -1 || src.RefID != dst.RefID
 }
 
 // enumPtr fetches a register that holds a pointer to an enum.

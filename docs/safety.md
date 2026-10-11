@@ -67,7 +67,10 @@ union). Conditional jumps refine integer ranges on each edge. A join that would
 merge two different arena handles is rejected rather than approximated: the
 value would name one of several arenas, whose capacity cannot be accounted. A
 region is function-scoped: it is released when the function that creates it
-returns, and it cannot escape that function.
+returns, and it cannot escape that function. A pointer return names the
+parameter whose region it lives in, and a reference may be stored only into a
+region that outlives it (a region created here only into memory that also dies
+here; two distinct parameter regions are unordered and cannot be linked).
 
 ## Non-goals / known threats
 

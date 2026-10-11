@@ -623,6 +623,55 @@ func TestVerifyReturnRejections(t *testing.T) {
 	}
 }
 
+func TestVerifyRegionOutlives(t *testing.T) {
+	// Linking two nodes allocated from the *same* caller region is fine: they
+	// die together.
+	same := "struct Node\n" +
+		"    next: ptr(Node)\n" +
+		"    val: i64\n" +
+		"endstruct\n" +
+		"func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r1 = s0\n" +
+		"    CALL link\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func link(r1: arena) -> i64\n" +
+		"    r2 = ARENA_ALLOC r1, Node\n" +
+		"    r3 = ARENA_ALLOC r1, Node\n" +
+		"    r2.next = r3\n" +
+		"    RET\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, same)); err != nil {
+		t.Fatalf("same region: expected success, got %v", err)
+	}
+
+	// Linking nodes from two *different* parameter regions is rejected: their
+	// lifetimes are unordered, so one may die before the other.
+	diff := "struct Node\n" +
+		"    next: ptr(Node)\n" +
+		"    val: i64\n" +
+		"endstruct\n" +
+		"func main -> i64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r1 = s0\n" +
+		"    r2 = s0\n" +
+		"    CALL link\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func link(r1: arena, r2: arena) -> i64\n" +
+		"    r3 = ARENA_ALLOC r1, Node\n" +
+		"    r4 = ARENA_ALLOC r2, Node\n" +
+		"    r3.next = r4\n" +
+		"    RET\n" +
+		"endfunc\n"
+	if _, err := Verify(mustParse(t, diff)); err == nil {
+		t.Fatal("different regions: expected rejection")
+	} else if !strings.Contains(err.Error(), "does not outlive the destination") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
 func TestVerifyOwnership(t *testing.T) {
 	// A borrowed region: the callee allocates from it; the caller releases it.
 	valid := "func main -> i64\n" +
@@ -666,7 +715,7 @@ func TestVerifyOwnership(t *testing.T) {
 				"    r1.p = r3\n" +
 				"    RET\n" +
 				"endfunc\n",
-			"outlives the function",
+			"does not outlive the destination",
 		},
 	}
 	for _, tc := range cases {

@@ -354,11 +354,17 @@ creates it, and is released **automatically** at the `RET`. There is no explicit
 release.
 
 - A region cannot escape its creating function: `-> arena`, `own` parameters and
-  `arena` fields are rejected, and a reference to a local region may not be
-  returned or stored into memory that outlives the call.
-- A pointer returned from a call has unknown provenance and is conservatively
-  treated as possibly local: it cannot be returned onward or stored into memory
-  that outlives the call.
+  `arena` fields are rejected.
+- A reference may be stored only where its region outlives the destination: the
+  verifier proves that the stored region dies no earlier than the destination
+  region. A region created here may therefore be stored only into memory that
+  also dies here; a pointer into a parameter region may not be stored into
+  memory that may outlive it. Two *different* parameter regions are unordered
+  (the callee cannot see the callers' frame order), so linking them is rejected
+  — copy the data into one region first.
+- A pointer returned from a call lives in the region named by the callee's
+  return annotation (`-> rK: ...`), which is whatever the caller passed in that
+  argument; the caller therefore knows the result's region exactly.
 - An `arena` parameter is borrowed: the callee may allocate from it but the
   region belongs to the caller. To build data across a call, the caller creates
   the region and passes it down; a callee may return a pointer into it, because

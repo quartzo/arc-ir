@@ -199,19 +199,21 @@ function — gaining a region scope — without paying for a call per iteration
 A region is **function-scoped**: it lives at most as long as the function that
 creates it, and is released **automatically** at the `RET`. There is no explicit
 release. A region cannot escape its creating function — returning an `arena`, an
-`own` parameter, and an `arena` field are all rejected, and a reference to a
-local region may not be returned or stored into memory that outlives the call.
+`own` parameter, and an `arena` field are all rejected, and a reference may be
+stored only into a region that outlives it.
 
 - An `arena` parameter is **borrowed**: the callee may allocate from it but the
   region belongs to the caller. A `stack(size)` parameter borrows a stack arena
   (see [Arenas](#arenas)) with a byte budget; a plain `arena` parameter is
   heap-backed.
 - To build data across a call, the **caller creates the region and passes it
-  down** (as an `arena`, a `stack(size)`, or a `ptr`). A callee can return a
-  pointer into it, because the region outlives the call.
-- A pointer returned from a call has unknown provenance and is conservatively
-  treated as possibly local: it cannot be returned onward or stored into memory
-  that outlives the call.
+  down** (as an `arena`, a `stack(size)`, or a `ptr`). A callee returns a
+  pointer into it, naming that parameter in its return type (`-> rK: ptr(...)`),
+  because the region outlives the call.
+- Storing a reference requires the stored region to outlive the destination. A
+  region created here may only be stored into memory that also dies here; two
+  distinct parameter regions are unordered, so linking them is rejected — copy
+  the data into one region first.
 
 `examples/region.arc`:
 
@@ -330,8 +332,8 @@ Rejected programs include:
 
 - **Out-of-bounds** — a static or dynamic access whose range cannot be proven
   to fit `[0, AllocSize)`.
-- **Escape** — returning a reference to a region created in the function, or
-  storing one into memory that outlives the call.
+- **Escape** — returning a pointer outside the region named in the return type,
+  or storing a reference into a region that does not outlive the destination.
 - **Use of an uninitialized register**, **type misuse** (`LOAD` from an integer,
   `ARENA_ALLOC` on an integer, ...).
 - **Allocation exceeding arena capacity**, **non-positive sizes**.
@@ -367,7 +369,7 @@ Invalid examples are rejected before any code is emitted:
 
 ```
 $ ./arcc verify examples/invalid_escape.arc
-arcc: verify error (line 22): cannot store a reference to a region created here into memory that outlives the function (regions are function-scoped)
+arcc: verify error (line 22): cannot store a reference into a region that does not outlive the destination (regions are function-scoped; copy it into the destination region instead)
 
 $ ./arcc verify examples/invalid_oob.arc
 arcc: verify error (line 6): out-of-bounds: access [r2 + 12] may reach offset 20, exceeding allocation of 16 bytes
