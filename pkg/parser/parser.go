@@ -1,20 +1,24 @@
 // Package parser reads the ARC flat-assembly text syntax.
 //
-// The syntax is line oriented. Each line is either a label, or an instruction.
-// Comments start with ';' or '#'. Registers are r0..r15.
+// The syntax is line oriented. A program is a sequence of top-level items:
+// functions, structs and enums, or (before any function) bare instructions that
+// form the entry function. Each block ends with an explicit terminator:
 //
-//	entry:
-//	    r1 = ARENA_CREATE DRAM_LOCAL, 4096
-//	    r2 = ARENA_ALLOC r1, [i64; 16]
-//	    r3 = 0
-//	loop:
-//	    JGE r3, 10, exit
-//	    STORE [r2 + r3*8], r3
-//	    r3 = ADD r3, 1
-//	    JMP loop
-//	exit:
-//	    ARENA_DESTROY r1
-//	    RET r3
+//	func name(params)
+//	    r0 = ADD r1, r2
+//	    RET r0
+//	endfunc
+//
+//	struct Name
+//	    field: type, other: type
+//	endstruct
+//
+//	enum Name
+//	    Variant, Variant(field: type)
+//	endenum
+//
+// Comments start with ';' or '#'. Registers are r0..r31 (scratch), s0..s31
+// (preserved) and v0..v15 (vector).
 package parser
 
 import (
@@ -28,9 +32,58 @@ import (
 	"arc-ir/pkg/ir"
 )
 
+// blockKind identifies the block a line belongs to.
+type blockKind int
+
+const (
+	blockNone blockKind = iota
+	blockFunc
+	blockStruct
+	blockEnum
+)
+
+func (k blockKind) String() string {
+	switch k {
+	case blockFunc:
+		return "function"
+	case blockStruct:
+		return "struct"
+	case blockEnum:
+		return "enum"
+	}
+	return "block"
+}
+
+func (k blockKind) terminator() string {
+	switch k {
+	case blockFunc:
+		return "endfunc"
+	case blockStruct:
+		return "endstruct"
+	case blockEnum:
+		return "endenum"
+	}
+	return ""
+}
+
+func isBlockTerminator(tok string) bool {
+	return tok == "endfunc" || tok == "endstruct" || tok == "endenum"
+}
+
+func isBlockOpener(tok string) bool {
+	return tok == "func" || tok == "struct" || tok == "packed" || tok == "enum"
+}
+
 // Parse reads a complete ARC program.
 func Parse(src string) (*ir.Program, error) {
 	prog := &ir.Program{Structs: map[string]*ir.Struct{}, Enums: map[string]*ir.Enum{}}
+
+	state := blockNone
+	openLine := 0
+	var curStruct *ir.Struct
+	var curEnum *ir.Enum
+	var pendingAlign int64
+
 	for i, raw := range strings.Split(src, "\n") {
 		lineNo := i + 1
 		line := stripComment(raw)
@@ -41,23 +94,100 @@ func Parse(src string) (*ir.Program, error) {
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNo, err)
 		}
-		if toks[0] == "struct" || (toks[0] == "packed" && len(toks) > 1 && toks[1] == "struct") {
-			if err := parseStruct(prog, toks, lineNo); err != nil {
-				return nil, err
+		head := toks[0]
+
+		// A block terminator is a bare keyword on its own line. A label that
+		// happens to be named after one (e.g. "endfunc:") is not a terminator.
+		if isBlockTerminator(head) && !(len(toks) >= 2 && toks[1] == ":") {
+			if len(toks) != 1 {
+				return nil, fmt.Errorf("line %d: unexpected token %q after %s", lineNo, toks[1], head)
+			}
+			want := map[string]blockKind{
+				"endfunc": blockFunc, "endstruct": blockStruct, "endenum": blockEnum,
+			}[head]
+			if state == blockNone {
+				return nil, fmt.Errorf("line %d: %s with no open block", lineNo, head)
+			}
+			if state != want {
+				return nil, fmt.Errorf("line %d: %s cannot close %s opened at line %d",
+					lineNo, head, state, openLine)
+			}
+			switch state {
+			case blockStruct:
+				if _, dup := prog.Structs[curStruct.Name]; dup {
+					return nil, fmt.Errorf("line %d: duplicate struct %q", lineNo, curStruct.Name)
+				}
+				prog.Structs[curStruct.Name] = curStruct
+			case blockEnum:
+				if _, dup := prog.Enums[curEnum.Name]; dup {
+					return nil, fmt.Errorf("line %d: duplicate enum %q", lineNo, curEnum.Name)
+				}
+				prog.Enums[curEnum.Name] = curEnum
+			}
+			state, curStruct, curEnum = blockNone, nil, nil
+			continue
+		}
+
+		if state == blockNone {
+			switch {
+			case head == "struct" || (head == "packed" && len(toks) > 1 && toks[1] == "struct"):
+				st, err := parseStructHeader(toks, lineNo)
+				if err != nil {
+					return nil, err
+				}
+				curStruct, pendingAlign = st, 0
+				state, openLine = blockStruct, lineNo
+			case head == "enum":
+				e, err := parseEnumHeader(toks, lineNo)
+				if err != nil {
+					return nil, err
+				}
+				curEnum = e
+				state, openLine = blockEnum, lineNo
+			case head == "func":
+				inst, err := parseFunc(toks, lineNo)
+				if err != nil {
+					return nil, err
+				}
+				prog.Instrs = append(prog.Instrs, inst)
+				state, openLine = blockFunc, lineNo
+			default:
+				inst, err := parseLine(toks, lineNo)
+				if err != nil {
+					return nil, err
+				}
+				prog.Instrs = append(prog.Instrs, inst)
 			}
 			continue
 		}
-		if toks[0] == "enum" {
-			if err := parseEnum(prog, toks, lineNo); err != nil {
+
+		// Inside a block.
+		switch state {
+		case blockFunc:
+			if isBlockOpener(head) {
+				return nil, fmt.Errorf("line %d: %s cannot start inside a function opened at line %d",
+					lineNo, head, openLine)
+			}
+			inst, err := parseLine(toks, lineNo)
+			if err != nil {
 				return nil, err
 			}
-			continue
+			prog.Instrs = append(prog.Instrs, inst)
+		case blockStruct:
+			pendingAlign, err = parseStructFields(curStruct, toks, lineNo, pendingAlign)
+			if err != nil {
+				return nil, err
+			}
+		case blockEnum:
+			if err := parseEnumVariants(curEnum, toks, lineNo); err != nil {
+				return nil, err
+			}
 		}
-		inst, err := parseLine(toks, lineNo)
-		if err != nil {
-			return nil, err
-		}
-		prog.Instrs = append(prog.Instrs, inst)
+	}
+
+	if state != blockNone {
+		return nil, fmt.Errorf("line %d: unterminated %s (expected %s)",
+			openLine, state, state.terminator())
 	}
 
 	// Lay out every struct and enum (offsets and size), then resolve pointer
@@ -152,10 +282,8 @@ func namedSize(prog *ir.Program, name string) (int64, bool) {
 	return 0, false
 }
 
-// parseStruct parses "struct Name { field: type, ... }" or
-// "packed struct Name { ... }". A standalone "align N" directive before a field
-// forces that field's offset.
-func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
+// parseStructHeader parses "struct Name" or "packed struct Name".
+func parseStructHeader(toks []string, lineNo int) (*ir.Struct, error) {
 	c := &cursor{toks: toks, line: lineNo}
 	packed := false
 	if c.peek() == "packed" {
@@ -165,57 +293,53 @@ func parseStruct(prog *ir.Program, toks []string, lineNo int) error {
 	c.pos++ // skip "struct"
 	name, err := c.next()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !isIdent(name) {
-		return fmt.Errorf("line %d: expected struct name, got %q", lineNo, name)
+		return nil, fmt.Errorf("line %d: expected struct name, got %q", lineNo, name)
 	}
-	if err := c.expect("{"); err != nil {
-		return err
+	if err := noTrailing(c); err != nil {
+		return nil, err
 	}
-	st := &ir.Struct{Name: name, Packed: packed}
-	var pendingAlign int64
-	for c.peek() != "}" {
+	return &ir.Struct{Name: name, Packed: packed}, nil
+}
+
+// parseStructFields parses one line of a struct body: a comma-separated list of
+// "name: type" fields, possibly with a standalone "align N" directive. It
+// returns the pending alignment to apply to the next field (set by a trailing
+// "align" with no field after it on the same line).
+func parseStructFields(st *ir.Struct, toks []string, lineNo int, pendingAlign int64) (int64, error) {
+	c := &cursor{toks: toks, line: lineNo}
+	for c.more() {
 		if c.peek() == "align" {
 			c.pos++
 			a, err := parseImm(c, lineNo)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			if a <= 0 {
-				return fmt.Errorf("line %d: align must be positive, got %d", lineNo, a)
+				return 0, fmt.Errorf("line %d: align must be positive, got %d", lineNo, a)
 			}
 			pendingAlign = a
-			if c.peek() == "," {
-				c.pos++
-				continue
+		} else {
+			f, err := parseField(c, lineNo)
+			if err != nil {
+				return 0, err
 			}
-			break
+			f.Align = pendingAlign
+			pendingAlign = 0
+			st.Fields = append(st.Fields, f)
 		}
-		f, err := parseField(c, lineNo)
-		if err != nil {
-			return err
-		}
-		f.Align = pendingAlign
-		pendingAlign = 0
-		st.Fields = append(st.Fields, f)
 		if c.peek() == "," {
 			c.pos++
 			continue
 		}
 		break
 	}
-	if err := c.expect("}"); err != nil {
-		return err
-	}
 	if err := noTrailing(c); err != nil {
-		return err
+		return 0, err
 	}
-	if _, dup := prog.Structs[name]; dup {
-		return fmt.Errorf("line %d: duplicate struct %q", lineNo, name)
-	}
-	prog.Structs[name] = st
-	return nil
+	return pendingAlign, nil
 }
 
 // parseField parses "name: type".
@@ -245,22 +369,28 @@ func parseField(c *cursor, lineNo int) (ir.Field, error) {
 	}, nil
 }
 
-// parseEnum parses "enum Name { Variant, Variant(field: type, ...), ... }".
-func parseEnum(prog *ir.Program, toks []string, lineNo int) error {
+// parseEnumHeader parses "enum Name".
+func parseEnumHeader(toks []string, lineNo int) (*ir.Enum, error) {
 	c := &cursor{toks: toks, line: lineNo}
 	c.pos++ // skip "enum"
 	name, err := c.next()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !isIdent(name) {
-		return fmt.Errorf("line %d: expected enum name, got %q", lineNo, name)
+		return nil, fmt.Errorf("line %d: expected enum name, got %q", lineNo, name)
 	}
-	if err := c.expect("{"); err != nil {
-		return err
+	if err := noTrailing(c); err != nil {
+		return nil, err
 	}
-	e := &ir.Enum{Name: name}
-	for c.peek() != "}" {
+	return &ir.Enum{Name: name}, nil
+}
+
+// parseEnumVariants parses one line of an enum body: a comma-separated list of
+// variants, each optionally carrying a parenthesised, comma-separated field list.
+func parseEnumVariants(e *ir.Enum, toks []string, lineNo int) error {
+	c := &cursor{toks: toks, line: lineNo}
+	for c.more() {
 		vname, err := c.next()
 		if err != nil {
 			return err
@@ -294,17 +424,7 @@ func parseEnum(prog *ir.Program, toks []string, lineNo int) error {
 		}
 		break
 	}
-	if err := c.expect("}"); err != nil {
-		return err
-	}
-	if err := noTrailing(c); err != nil {
-		return err
-	}
-	if _, dup := prog.Enums[name]; dup {
-		return fmt.Errorf("line %d: duplicate enum %q", lineNo, name)
-	}
-	prog.Enums[name] = e
-	return nil
+	return noTrailing(c)
 }
 
 // typeSpec is a parsed type: a scalar, an arena, or a pointer target.
@@ -448,11 +568,6 @@ func (c *cursor) expect(tok string) error {
 
 func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	c := &cursor{toks: toks, line: lineNo}
-
-	// Function declaration: "func name(params):".
-	if toks[0] == "func" {
-		return parseFunc(toks, lineNo)
-	}
 
 	// Label: "name:".
 	if len(toks) >= 2 && isIdent(toks[0]) && toks[1] == ":" {
@@ -600,7 +715,8 @@ func parseLine(toks []string, lineNo int) (ir.Instruction, error) {
 	return inst, nil
 }
 
-// parseFunc parses "func name(param: type, ...):".
+// parseFunc parses "func name(param: type, ...)" (the block is closed by
+// "endfunc"). An optional return type follows as "-> type".
 func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 	c := &cursor{toks: toks, line: lineNo}
 	c.pos = 1 // skip "func"
@@ -678,9 +794,6 @@ func parseFunc(toks []string, lineNo int) (ir.Instruction, error) {
 		inst.RetSize = spec.size
 	}
 
-	if err := c.expect(":"); err != nil {
-		return ir.Instruction{}, err
-	}
 	if err := noTrailing(c); err != nil {
 		return ir.Instruction{}, err
 	}

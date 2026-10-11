@@ -244,19 +244,21 @@ Memory is typed by the **region type**, not by ad-hoc writes:
 
 ## 6. Functions and the calling convention
 
-Functions are declared with `func`:
+Functions are declared with `func` and closed with `endfunc`:
 
 ```
-func main:
+func main
     r1 = 3
     r2 = 4
     CALL add
     PRINT r0
     RET r0
+endfunc
 
-func add(r1: i64, r2: i64):
+func add(r1: i64, r2: i64)
     r0 = ADD r1, r2
     RET r0
+endfunc
 ```
 
 The calling convention is:
@@ -281,9 +283,10 @@ parameter is **borrowed** unless prefixed with `own`, which transfers ownership
 to the callee (see §7):
 
 ```
-func read(r1: ptr([i64; 8])):
+func read(r1: ptr([i64; 8]))
     r0 = LOAD [r1]
     RET r0
+endfunc
 ```
 
 The verifier checks each function independently against its declared parameter
@@ -294,13 +297,15 @@ may recurse.
 A function may declare a return type with `->`:
 
 ```
-func get_arena() -> arena:
+func get_arena() -> arena
     r0 = ARENA_CREATE DRAM_LOCAL, 4096
     RET r0
+endfunc
 
-func make(r1: arena) -> ptr([i64; 8]):
+func make(r1: arena) -> ptr([i64; 8])
     r0 = ARENA_ALLOC r1, [i64; 8]
     RET r0
+endfunc
 ```
 
 The default return type is `i64`. The verifier checks at every `RET` that
@@ -328,14 +333,16 @@ path before the function returns — otherwise the verifier reports a leak.
 - Returning an `arena` transfers ownership to the caller.
 
 ```
-func main:
+func main
     r1 = ARENA_CREATE DRAM_LOCAL, 64   ; owned here
-    CALL consume                        ; ownership moves to consume
+    CALL consume                       ; ownership moves to consume
     RET
+endfunc
 
-func consume(r1: own arena):
-    ARENA_DESTROY r1                    ; released here
+func consume(r1: own arena)
+    ARENA_DESTROY r1                   ; released here
     RET
+endfunc
 ```
 
 This is what makes use-after-free across calls detectable: after a call that
@@ -344,14 +351,20 @@ consumes an arena, every handle and pointer to it becomes dead.
 ## 8. Program structure
 
 ```
-program    := { function }
-function   := "func" ident [ "(" params ")" ] ":" { block }
-block      := { instruction }
+program    := { top }
+top        := function | structdef | enumdef
+function   := "func" ident [ "(" params ")" ] [ "->" type ] { instruction } "endfunc"
+structdef  := [ "packed" ] "struct" ident { field | "align" int } "endstruct"
+enumdef    := "enum" ident { variant } "endenum"
+field      := ident ":" type
+variant    := ident [ "(" { field } ")" ]
 ```
 
 **(draft)** The grammar above is being formalized. Until the first `func`
 appears, a program may also be written without any function declaration, in
-which case the whole program is the entry function `main`.
+which case the whole program is the entry function `main`. Every block is
+closed by an explicit terminator keyword; there is no brace or indentation
+syntax, and indentation is not significant.
 
 ## 9. Structs
 
@@ -359,8 +372,17 @@ A struct is a named layout. Each field is an integer of some width, an arena
 handle, or a pointer (all one word):
 
 ```
-struct Node { next: ptr(Node), val: i64 }
-struct Rec  { a: u8, b: u16, c: u32, d: u64 }
+struct Node
+    next: ptr(Node)
+    val: i64
+endstruct
+
+struct Rec
+    a: u8
+    b: u16
+    c: u32
+    d: u64
+endstruct
 ```
 
 By default a struct is **naturally aligned**: each field is placed at an offset
@@ -369,8 +391,16 @@ alignment. A `packed struct` has no padding, and a standalone `align N`
 directive before a field forces that field's offset:
 
 ```
-packed struct P { a: u8, b: u32 }     ; a@0, b@1, sizeof 5
-struct Q { a: u8, align 8, b: u8 }    ; a@0, b@8, sizeof 16
+packed struct P
+    a: u8
+    b: u32
+endstruct                              ; a@0, b@1, sizeof 5
+
+struct Q
+    a: u8
+    align 8
+    b: u8
+endstruct                              ; a@0, b@8, sizeof 16
 ```
 
 - `ARENA_ALLOC r, Node` allocates `sizeof(Node)` and gives `r` the struct type.
@@ -387,10 +417,11 @@ A struct layout travels in a `ptr(Struct)` parameter, so the callee can read
 and write the fields:
 
 ```
-func read(r1: ptr(Node)):
+func read(r1: ptr(Node))
     r2 = r1.next
     r0 = LOAD [r2]
     RET r0
+endfunc
 ```
 
 The caller must pass a pointer of that struct whose fields are all
@@ -406,9 +437,10 @@ of type `T`, where `T` is an integer (`i8`…`i64`, `u8`…`u64`) or a float (`f
 may be a parameter type, a return type, or a struct field:
 
 ```
-func first(r1: ptr([i64; 4])) -> i64:
+func first(r1: ptr([i64; 4])) -> i64
     r0 = LOAD [r1]
     RET r0
+endfunc
 ```
 
 `ARENA_ALLOC r, [T; N]` allocates the array and gives `r` an array pointer. A
@@ -435,7 +467,11 @@ followed by a payload region sized to the largest variant; every variant's
 fields live at their offset inside that shared payload:
 
 ```
-enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }
+enum Value
+    Int(n: i64)
+    Pair(a: i32, b: i32)
+    Nil
+endenum
 ```
 
 `ARENA_ALLOC r, Value` allocates `sizeof(Value)` and gives `r` the enum type.
@@ -454,7 +490,7 @@ tests it with `JV`. Because a callee may change the tag, the caller's variant is
 forgotten after a call.
 
 ```
-func twice(r1: ptr(Value)) -> i64:
+func twice(r1: ptr(Value)) -> i64
     JV r1, Value.Int, as_int
     JV r1, Value.Pair, as_pair
     r0 = 0
@@ -468,6 +504,7 @@ as_pair:
     r3 = r1.b
     r0 = ADD r2, r3
     RET r0
+endfunc
 ```
 
 

@@ -1,5 +1,5 @@
 ; float.arc - f64 scalar arithmetic and integer<->float conversions.
-func main:
+func main
     v1 = 2.5
     v2 = 4.0
     v3 = FMUL v1, v2        ; 10.0
@@ -10,3 +10,4 @@ func main:
     v5 = ITOF r1            ; 12.0
     PRINTF v5
     RET r1
+endfunc

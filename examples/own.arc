@@ -1,6 +1,6 @@
 ; own.arc - transfer arena ownership to a function that destroys it.
 ; The value kept across the call lives in a preserved register (s0).
-func main:
+func main
     r1 = ARENA_CREATE DRAM_LOCAL, 64
     r2 = ARENA_ALLOC r1, [i64; 8]
     r3 = 5
@@ -9,7 +9,9 @@ func main:
     PRINT s0
     CALL consume
     RET s0
+endfunc
 
-func consume(r1: own arena):
+func consume(r1: own arena)
     ARENA_DESTROY r1
     RET
+endfunc

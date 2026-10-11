@@ -87,14 +87,16 @@ func TestParseMovForms(t *testing.T) {
 }
 
 func TestParseFunc(t *testing.T) {
-	src := "func main:\n" +
+	src := "func main\n" +
 		"    r1 = 3\n" +
 		"    r2 = 4\n" +
 		"    CALL add\n" +
 		"    RET r0\n" +
-		"func add(r1: i64, r2: i64):\n" +
+		"endfunc\n" +
+		"func add(r1: i64, r2: i64)\n" +
 		"    r0 = ADD r1, r2\n" +
-		"    RET r0\n"
+		"    RET r0\n" +
+		"endfunc\n"
 	prog, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -120,7 +122,9 @@ func TestParseFunc(t *testing.T) {
 }
 
 func TestParsePtrParam(t *testing.T) {
-	prog, err := Parse("func f(r1: ptr([i64; 8])):\n    RET\n")
+	prog, err := Parse("func f(r1: ptr([i64; 8]))\n" +
+		"    RET\n" +
+		"endfunc\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -131,9 +135,15 @@ func TestParsePtrParam(t *testing.T) {
 }
 
 func TestParseReturnType(t *testing.T) {
-	src := "func f() -> arena:\n    RET\n" +
-		"func g() -> ptr([i64; 8]):\n    RET\n" +
-		"func h() -> i64:\n    RET\n"
+	src := "func f() -> arena\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func g() -> ptr([i64; 8])\n" +
+		"    RET\n" +
+		"endfunc\n" +
+		"func h() -> i64\n" +
+		"    RET\n" +
+		"endfunc\n"
 	prog, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -150,7 +160,9 @@ func TestParseReturnType(t *testing.T) {
 }
 
 func TestParseOwnParam(t *testing.T) {
-	prog, err := Parse("func f(r1: own arena, r2: arena):\n    RET\n")
+	prog, err := Parse("func f(r1: own arena, r2: arena)\n" +
+		"    RET\n" +
+		"endfunc\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -264,12 +276,16 @@ func TestParseSIMD64(t *testing.T) {
 }
 
 func TestParseStruct(t *testing.T) {
-	src := "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
-		"func main:\n" +
+	src := "struct Node\n" +
+		"    next: ptr([i64; 1])\n" +
+		"    val: i64\n" +
+		"endstruct\n" +
+		"func main\n" +
 		"    r2 = ARENA_ALLOC r1, Node\n" +
 		"    r3 = r2.next\n" +
 		"    r2.val = r3\n" +
-		"    RET\n"
+		"    RET\n" +
+		"endfunc\n"
 	prog, err := Parse(src)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -296,7 +312,13 @@ func TestParseStruct(t *testing.T) {
 }
 
 func TestParsePtrStruct(t *testing.T) {
-	prog, err := Parse("struct Node { next: ptr([i64; 1]), val: i64 }\nfunc f(r1: ptr(Node)):\n    RET\n")
+	prog, err := Parse("struct Node\n" +
+		"    next: ptr([i64; 1])\n" +
+		"    val: i64\n" +
+		"endstruct\n" +
+		"func f(r1: ptr(Node))\n" +
+		"    RET\n" +
+		"endfunc\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -308,9 +330,19 @@ func TestParsePtrStruct(t *testing.T) {
 
 func TestStructLayout(t *testing.T) {
 	prog, err := Parse(
-		"struct P { a: u8, b: u32 }\n" +
-			"packed struct Q { a: u8, b: u32 }\n" +
-			"struct R { a: u8, align 8, b: u8 }\n")
+		"struct P\n" +
+			"    a: u8\n" +
+			"    b: u32\n" +
+			"endstruct\n" +
+			"packed struct Q\n" +
+			"    a: u8\n" +
+			"    b: u32\n" +
+			"endstruct\n" +
+			"struct R\n" +
+			"    a: u8\n" +
+			"    align 8\n" +
+			"    b: u8\n" +
+			"endstruct\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -340,13 +372,18 @@ func TestStructLayout(t *testing.T) {
 }
 
 func TestParseEnum(t *testing.T) {
-	prog, err := Parse("enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }\n" +
-		"func main:\n" +
+	prog, err := Parse("enum Value\n" +
+		"    Int(n: i64)\n" +
+		"    Pair(a: i32, b: i32)\n" +
+		"    Nil\n" +
+		"endenum\n" +
+		"func main\n" +
 		"    r1 = ARENA_ALLOC r0, Value\n" +
 		"    VARIANT r1, Value.Pair\n" +
 		"    JV r1, Value.Int, x\n" +
 		"x:\n" +
-		"    RET\n")
+		"    RET\n" +
+		"endfunc\n")
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -382,12 +419,27 @@ func TestParseErrors(t *testing.T) {
 		{"bad scale", "STORE [r1 + r2*3], r3\n", "scale must be"},
 		{"missing bracket", "r1 = LOAD r2\n", "expected"},
 		{"trailing junk", "r1 = 1 2\n", "unexpected token"},
-		{"raw ptr rejected", "func f(r1: ptr(64)):\n    RET\n", "ptr needs a struct or array"},
-		{"raw ptr return rejected", "func f() -> ptr(64):\n    RET\n", "ptr needs a struct or array"},
-		{"unknown param type", "func f(r1: blob):\n    RET\n", "unknown type"},
-		{"own on non-arena", "func f(r1: own i64):\n    RET\n", "only valid for arena"},
+		{"raw ptr rejected", "func f(r1: ptr(64))\n" +
+			"    RET\n" +
+			"endfunc\n", "ptr needs a struct or array"},
+		{"raw ptr return rejected", "func f() -> ptr(64)\n" +
+			"    RET\n" +
+			"endfunc\n", "ptr needs a struct or array"},
+		{"unknown param type", "func f(r1: blob)\n" +
+			"    RET\n" +
+			"endfunc\n", "unknown type"},
+		{"own on non-arena", "func f(r1: own i64)\n" +
+			"    RET\n" +
+			"endfunc\n", "only valid for arena"},
 		{"missing destination", "ARENA_CREATE DRAM_LOCAL, 1\n", "requires a destination"},
 		{"unexpected destination", "r1 = PRINT r2\n", "does not produce a result"},
+		{"missing endfunc", "func f\n    RET\n", "unterminated function"},
+		{"unterminated struct", "struct S\n    a: u8\n", "unterminated struct"},
+		{"unterminated enum", "enum E\n    A\n", "unterminated enum"},
+		{"stray endfunc", "endfunc\n", "no open block"},
+		{"mismatched endstruct", "func f\n    RET\nendstruct\n", "cannot close"},
+		{"nested func", "func f\n    func g\nendfunc\n", "cannot start inside"},
+		{"trailing after endfunc", "func f\n    RET\nendfunc now\n", "unexpected token"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

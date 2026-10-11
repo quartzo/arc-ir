@@ -1,9 +1,14 @@
 ; typed_mem.arc - a struct with fields of different widths.
 ; The verifier tracks each field's type and width, so a store to a u8 field
 ; writes one byte and a load zero-extends the result.
-struct Rec { a: u8, b: u16, c: u32, d: u64 }
+struct Rec
+    a: u8
+    b: u16
+    c: u32
+    d: u64
+endstruct
 
-func main:
+func main
     r1 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC r1, Rec
     r3 = 200
@@ -24,3 +29,4 @@ func main:
     PRINT r10
     ARENA_DESTROY r1
     RET r7
+endfunc

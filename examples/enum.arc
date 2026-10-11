@@ -2,9 +2,13 @@
 ; A value is constructed with VARIANT; the callee refines the active variant
 ; with JV and can then read that variant's fields.
 ; The arena handle survives the call, so it lives in s0.
-enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }
+enum Value
+    Int(n: i64)
+    Pair(a: i32, b: i32)
+    Nil
+endenum
 
-func main:
+func main
     s0 = ARENA_CREATE DRAM_LOCAL, 256
     r2 = ARENA_ALLOC s0, Value
     VARIANT r2, Value.Int
@@ -15,8 +19,9 @@ func main:
     PRINT r0
     ARENA_DESTROY s0
     RET
+endfunc
 
-func twice(r1: ptr(Value)) -> i64:
+func twice(r1: ptr(Value)) -> i64
     JV r1, Value.Int, as_int
     JV r1, Value.Pair, as_pair
     r0 = 0
@@ -32,3 +37,4 @@ as_pair:
     r3 = r1.b
     r0 = ADD r2, r3
     RET r0
+endfunc

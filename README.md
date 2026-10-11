@@ -4,18 +4,18 @@
 intermediate representation that compiles straight to x86_64 assembly.
 
 ARC is deliberately *not* SSA and does *not* go through LLVM IR. It models a
-real machine: a fixed file of 16 registers (`r0..r15`) that instructions read
-and write in place, and direct jumps between labeled blocks. The compiler
-front end is written in Go and mirrors the eBPF verifier: untrusted programs
-(often produced by an LLVM/LLM) are *proven* memory-safe by an abstract
-interpreter before any machine code is emitted.
+real machine: a flat register file — scratch `r0..r31`, preserved `s0..s31` and
+vector `v0..v15` — that instructions read and write in place, and direct jumps
+between labeled blocks. The compiler front end is written in Go and mirrors the
+eBPF verifier: untrusted programs (often produced by an LLVM/LLM) are *proven*
+memory-safe by an abstract interpreter before any machine code is emitted.
 
 > **Docs:** [Vision](docs/vision.md) · [Safety contract](docs/safety.md) ·
 > [Assembly reference](docs/assembly.md) · [AGENTS.md](AGENTS.md)
 
 ```
  Source (.arc)   →   Parser (Go)   →   ARC assembly   →   Verifier (Go)   →   x86_64 asm   →   Binary
-      text            text/scanner      r0..r15,           abstract           GNU as
+      text            text/scanner      flat regs,          abstract           GNU as
       / LLM                             jmp/branch         interpretation     + C runtime
 ```
 
@@ -138,21 +138,23 @@ done:
 
 ## Functions
 
-Functions are declared with `func` and called with `CALL`. Arguments are
-passed in `r1`–`r4`, the return value in `r0`, and every other register is
-preserved across the call (a call is transparent except for `r0`). Functions
-may recurse.
+Functions are declared with `func`, closed with `endfunc`, and called with
+`CALL`. Arguments are passed in `r1`–`r4` and the return value in `r0`. Scratch
+registers (`r*`) and vector registers (`v*`) are destroyed by any call; a value
+that must survive a call lives in a preserved register (`s*`). Functions may
+recurse.
 
 `examples/fact.arc`:
 
 ```arc
-func main:
+func main
     r1 = 5
     CALL fact
     PRINT r0
     RET r0
+endfunc
 
-func fact(r1: i64):
+func fact(r1: i64)
     JGT r1, 1, rec
     r0 = 1
     RET r0
@@ -164,6 +166,7 @@ rec:
     r4 = MUL r3, r0
     r0 = r4
     RET r0
+endfunc
 ```
 
 Parameters are typed: an integer (`i8`…`i64`, `u8`…`u64`),
@@ -195,16 +198,18 @@ and any use of a handle or pointer after its arena has been released.
 `examples/own.arc`:
 
 ```arc
-func main:
+func main
     r1 = ARENA_CREATE DRAM_LOCAL, 64
     r2 = ARENA_ALLOC r1, 64
     ...
     CALL consume
     RET r4
+endfunc
 
-func consume(r1: own arena):
+func consume(r1: own arena)
     ARENA_DESTROY r1
     RET
+endfunc
 ```
 
 This is what makes use-after-free across calls detectable — the case that plain
@@ -235,7 +240,17 @@ yields the element type — an integer element loads into a general register
 (zero/sign-extended by its signedness), a float element into a vector register —
 and a store writes the element width (`examples/typed_mem.arc`).
 
-A **struct** is a named layout (`struct Rec { a: u8, b: u16, c: u32, d: u64 }`).
+A **struct** is a named layout:
+
+```arc
+struct Rec
+    a: u8
+    b: u16
+    c: u32
+    d: u64
+endstruct
+```
+
 By default fields are naturally aligned; `packed struct` removes padding and a
 standalone `align N` forces a field's offset. `ARENA_ALLOC r, Node` allocates it;
 `r.field` reads a field and `r.field = rsrc` writes one, with the access width
@@ -247,8 +262,17 @@ parameter, so the callee can read and write fields (`examples/struct.arc`,
 
 ## Enums
 
-An **enum** is a tagged union (`enum Value { Int(n: i64), Pair(a: i32, b: i32),
-Nil }`). `ARENA_ALLOC r, Value` allocates it; `VARIANT r, Value.Int` selects a
+An **enum** is a tagged union:
+
+```arc
+enum Value
+    Int(n: i64)
+    Pair(a: i32, b: i32)
+    Nil
+endenum
+```
+
+`ARENA_ALLOC r, Value` allocates it; `VARIANT r, Value.Int` selects a
 variant and `JV r, Value.Int, label` branches when that variant is active,
 **refining** the verifier's knowledge of the active variant. `r.field` reads a
 field of the active variant. Reading a field while the variant is unknown, or a
