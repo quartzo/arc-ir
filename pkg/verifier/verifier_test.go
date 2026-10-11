@@ -986,34 +986,6 @@ func TestVerifyEnum(t *testing.T) {
 	}
 }
 
-func TestVerifyClobbers(t *testing.T) {
-	// A declared clobber is destroyed for the caller.
-	bad := "func main:\n" +
-		"    r5 = 42\n" +
-		"    CALL leaf\n" +
-		"    PRINT r5\n" +
-		"    RET\n" +
-		"func leaf clobbers r5:\n" +
-		"    r5 = 7\n" +
-		"    RET\n"
-	if _, err := Verify(mustParse(t, bad)); err == nil || !strings.Contains(err.Error(), "destroyed register") {
-		t.Fatalf("expected a destroyed-register error, got %v", err)
-	}
-
-	// Undeclared registers are preserved across a call.
-	ok := "func main:\n" +
-		"    r5 = 42\n" +
-		"    CALL leaf\n" +
-		"    PRINT r5\n" +
-		"    RET\n" +
-		"func leaf:\n" +
-		"    r7 = 7\n" +
-		"    RET\n"
-	if _, err := Verify(mustParse(t, ok)); err != nil {
-		t.Fatalf("expected preserved register to survive, got %v", err)
-	}
-}
-
 func TestVerifyErrorLine(t *testing.T) {
 	src := "entry:\n    PRINT r5\n    RET\n"
 	_, err := Verify(mustParse(t, src))

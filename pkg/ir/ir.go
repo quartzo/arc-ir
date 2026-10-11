@@ -429,10 +429,6 @@ type Instruction struct {
 
 	// Params holds a function's declared parameters (OpFunc only).
 	Params []Param
-	// Clobbers holds a function's declared clobbered registers (OpFunc only):
-	// the registers a call to it destroys for the caller. Everything else is
-	// preserved.
-	Clobbers []Register
 	// RetKind/RetSize hold a function's declared return type (OpFunc only).
 	// The zero value (KindScalar, 0) means a scalar return.
 	RetKind   ValKind

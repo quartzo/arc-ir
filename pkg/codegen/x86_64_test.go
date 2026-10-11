@@ -195,12 +195,6 @@ func TestCompileAndRun(t *testing.T) {
 			"    JV r1, Value.Int, as_int\n    JV r1, Value.Pair, as_pair\n    r0 = 0\n    RET r0\n" +
 			"as_int:\n    r0 = r1.n\n    r0 = ADD r0, r0\n    RET r0\n" +
 			"as_pair:\n    r2 = r1.a\n    r3 = r1.b\n    r0 = ADD r2, r3\n    RET r0\n", "42"},
-		{"preserve_across_call", "func main:\n" +
-			"    r5 = 42\n    r6 = 99\n    CALL leaf\n    PRINT r5\n    PRINT r6\n    RET\n" +
-			"func leaf:\n    r7 = 7\n    r8 = 8\n    RET\n", "42\n99"},
-		{"declared_clobber", "func main:\n" +
-			"    CALL leaf\n    PRINT r0\n    RET\n" +
-			"func leaf() -> i64 clobbers r5:\n    r5 = 7\n    r0 = r5\n    RET r0\n", "7"},
 	}
 
 	for _, tc := range cases {

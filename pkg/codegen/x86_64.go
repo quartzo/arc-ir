@@ -45,10 +45,6 @@ const (
 	xmmScratch2 = "%xmm15"
 )
 
-// calleeSavedBytes is the number of bytes the prologue pushes for the
-// callee-saved registers (rbx, r12-r15). Stack slots start below them.
-const calleeSavedBytes = 5 * 8
-
 type loc struct {
 	reg string // non-empty when resident in a register
 	off int    // rbp-relative offset when spilled
@@ -62,7 +58,6 @@ type x64 struct {
 	// per-function state
 	fn         *ir.Function
 	used       []ir.Register
-	preserved  []ir.Register
 	slot       map[ir.Register]int
 	frame      int
 	vecScratch int // rbp-relative offset of a 16-byte scratch for vector prints
@@ -175,9 +170,6 @@ func (x *x64) emitFunc(f *ir.Function) error {
 	if x.frame > 0 {
 		x.line("\tsubq $%d, %%rsp", x.frame)
 	}
-	for _, r := range x.preserved {
-		x.line("\tmovq %s, %d(%%rbp)", x.physOf[r], x.slot[r])
-	}
 
 	for _, b := range f.Blocks {
 		x.line("%s:", x.blockLabel(b.Label))
@@ -190,10 +182,6 @@ func (x *x64) emitFunc(f *ir.Function) error {
 
 	x.line("\tmovq $0, %%rax")
 	x.line("%s:", x.epilogueLabel())
-	for i := len(x.preserved) - 1; i >= 0; i-- {
-		r := x.preserved[i]
-		x.line("\tmovq %d(%%rbp), %s", x.slot[r], x.physOf[r])
-	}
 	x.line("\taddq $%d, %%rsp", x.frame)
 	x.line("\tpopq %%r15")
 	x.line("\tpopq %%r14")
@@ -218,33 +206,6 @@ func (x *x64) prepare(f *ir.Function) {
 	sort.Slice(used, func(i, j int) bool { return used[i] < used[j] })
 	x.used = used
 
-	// Registers this function writes but does not declare as clobbers must be
-	// preserved: save their physical home at entry and restore it at exit.
-	clob := map[ir.Register]bool{}
-	for _, r := range f.Clobbers {
-		clob[r] = true
-	}
-	wrote := map[ir.Register]bool{}
-	for _, b := range f.Blocks {
-		for _, inst := range b.Instrs {
-			if inst.Op.HasDest() && inst.Dst.Valid() {
-				wrote[inst.Dst] = true
-			}
-		}
-	}
-	x.preserved = nil
-	for _, r := range used {
-		if r == 0 || clob[r] || !wrote[r] {
-			continue
-		}
-		if x.physOf[r] != "" {
-			x.preserved = append(x.preserved, r)
-		}
-	}
-
-	// Stack slots hold spilled registers and saved homes. They sit *below* the
-	// callee-saved pushes of the prologue (calleeSavedBytes), so a slot never
-	// overwrites a pushed callee-saved register.
 	x.slot = map[ir.Register]int{}
 	off := 0
 	for _, r := range used {
@@ -253,13 +214,13 @@ func (x *x64) prepare(f *ir.Function) {
 		} else {
 			off += 8
 		}
-		x.slot[r] = -(calleeSavedBytes + off)
+		x.slot[r] = -off
 	}
 	x.frame = off + 16
 	if x.frame%16 != 8 {
 		x.frame += 8
 	}
-	x.vecScratch = -(calleeSavedBytes + off + 16)
+	x.vecScratch = -(off + 16)
 }
 
 func (x *x64) inst(inst ir.Instruction) error {
@@ -307,8 +268,10 @@ func (x *x64) inst(inst ir.Instruction) error {
 		x.restoreAll()
 
 	case ir.OpCall:
+		x.saveAll()
 		x.line("\tcall %s", x.symbol[inst.Label])
 		x.line("\tmovq %%rax, %s", scratch2)
+		x.restoreAll()
 		x.store(scratch2, 0) // return value in r0
 
 	case ir.OpLoad:
