@@ -108,14 +108,14 @@ func TestCompileAndRun(t *testing.T) {
 			"rec:\n    r2 = SUB r1, 1\n    s0 = r1\n    r1 = r2\n    CALL fact\n" +
 			"    r0 = MUL s0, r0\n    RET r0\n", "120"},
 		{"ptr", "func main:\n" +
-			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC s0, [i64; 8]\n" +
 			"    r3 = 42\n    STORE [r2], r3\n    r1 = r2\n    CALL read\n" +
-			"    PRINT r0\n    ARENA_DESTROY r5\n    RET r0\n" +
+			"    PRINT r0\n    ARENA_DESTROY s0\n    RET r0\n" +
 			"func read(r1: ptr([i64; 8])):\n    r0 = LOAD [r1]\n    RET r0\n", "42"},
 		{"ret_ptr", "func main:\n" +
-			"    CALL get_arena\n    r1 = r0\n    CALL make\n    r2 = r0\n" +
+			"    CALL get_arena\n    s0 = r0\n    r1 = s0\n    CALL make\n    r2 = r0\n" +
 			"    r3 = 99\n    STORE [r2], r3\n    r4 = LOAD [r2]\n    PRINT r4\n" +
-			"    ARENA_DESTROY r1\n    RET r4\n" +
+			"    ARENA_DESTROY s0\n    RET r4\n" +
 			"func get_arena() -> arena:\n    r0 = ARENA_CREATE DRAM_LOCAL, 64\n    RET r0\n" +
 			"func make(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, [i64; 8]\n    RET r0\n", "99"},
 		{"typed_mem", "struct Rec { a: u8, b: u16, c: u32, d: u64 }\n" +
@@ -151,10 +151,10 @@ func TestCompileAndRun(t *testing.T) {
 			"    ARENA_DESTROY r1\n    RET r7\n", "42\n7"},
 		{"ptr_struct", "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 			"func main:\n" +
-			"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r9, Node\n" +
-			"    r3 = ARENA_ALLOC r9, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC s0, Node\n" +
+			"    r3 = ARENA_ALLOC s0, [i64; 1]\n    r4 = 42\n    STORE [r3], r4\n" +
 			"    r2.next = r3\n    r5 = 7\n    r2.val = r5\n    r1 = r2\n    CALL read\n" +
-			"    PRINT r0\n    ARENA_DESTROY r9\n    RET r0\n" +
+			"    PRINT r0\n    ARENA_DESTROY s0\n    RET r0\n" +
 			"func read(r1: ptr(Node)):\n    r2 = r1.next\n    r0 = LOAD [r2]\n    RET r0\n", "42"},
 		{"array", "func main:\n" +
 			"    r1 = ARENA_CREATE DRAM_LOCAL, 128\n    r2 = ARENA_ALLOC r1, [i64; 4]\n" +
@@ -188,9 +188,9 @@ func TestCompileAndRun(t *testing.T) {
 			"    r5 = r2.b\n    PRINT r5\n    ARENA_DESTROY r1\n    RET r5\n", "123456"},
 		{"enum", "enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }\n" +
 			"func main:\n" +
-			"    r5 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC r5, Value\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n    r2 = ARENA_ALLOC s0, Value\n" +
 			"    VARIANT r2, Value.Int\n    r3 = 21\n    r2.n = r3\n    r1 = r2\n    CALL twice\n" +
-			"    PRINT r0\n    ARENA_DESTROY r5\n    RET\n" +
+			"    PRINT r0\n    ARENA_DESTROY s0\n    RET\n" +
 			"func twice(r1: ptr(Value)) -> i64:\n" +
 			"    JV r1, Value.Int, as_int\n    JV r1, Value.Pair, as_pair\n    r0 = 0\n    RET r0\n" +
 			"as_int:\n    r0 = r1.n\n    r0 = ADD r0, r0\n    RET r0\n" +

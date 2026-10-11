@@ -1,6 +1,6 @@
 # ARC registers
 
-The general-purpose register file has two blocks with different semantics:
+The general-purpose register file has two blocks:
 
 | block     | names         | semantics                |
 |-----------|---------------|--------------------------|
@@ -11,30 +11,33 @@ The vector file is unchanged (`v0`..`v15`, the x64 line).
 
 ## Scratch
 
-A scratch register is volatile: a call may destroy it. The verifier marks as
-**destroyed** the scratch registers a callee writes — detected from the callee's
-body, transitively through the calls it makes — and rejects using one
-afterwards ("use of destroyed register").
+Scratch is volatile: **any call destroys the whole scratch block**. Using a
+scratch register after a call is an error ("use of destroyed register"). A value
+that must survive a call lives in a preserved register (`s*`).
 
 ## Preserved
 
-A preserved register is callee-saved: a call leaves it unchanged. The backend
-detects the preserved registers a function writes and saves/restores them in
-the prologue/epilogue. A value that must survive a call lives in a preserved
-register (`s*`).
+Preserved is callee-saved: a call leaves it unchanged. The backend saves, in
+its frame, the preserved registers a function actually uses; the verifier does
+not report them destroyed.
 
-## Detection, not declaration
+## Physical mapping
 
-Nothing is annotated. The compiler derives, per function, the registers it
-writes: scratch writes become a caller error, preserved writes are saved.
+The 32+32 logical file maps onto the target as:
 
-## Open decisions
+| block     | physical | in the thread area |
+|-----------|----------|--------------------|
+| scratch   | 5        | 27                 |
+| preserved | 10       | 22                 |
 
-- **Physical mapping.** The 32+32 logical file is mapped onto the target. The
-  plan is 5 scratch + 10 preserved physical registers, the rest in a fixed
-  per-thread memory area addressed through a reserved base register. Today the
-  backend still uses its earlier mapping (physical registers + per-function
-  stack slots).
-- **Scratch precision.** Today a scratch register is destroyed only if the
-  callee actually writes it. The stricter reading of "volatile" is that *any*
-  scratch register must be considered destroyed by any call.
+The area is a fixed per-thread region, addressed through a reserved base
+register. A preserved register whose home would be clobbered by a call is saved
+on the stack if the function actually uses it.
+
+## Status
+
+The logical blocks and their semantics are implemented: scratch is volatile and
+preserved is callee-saved, with the backend saving the preserved registers a
+function uses and no `saveAll` around calls. The physical/area split above is
+**not yet implemented** — the backend still uses its earlier mapping (physical
+registers plus per-function stack slots).

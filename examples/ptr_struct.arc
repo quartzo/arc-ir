@@ -1,10 +1,12 @@
 ; ptr_struct.arc - pass a struct by reference; the callee reads its fields.
+; The arena handle survives the call, so it lives in a preserved register (s0).
+
 struct Node { next: ptr(Node), val: i64 }
 
 func main:
-    r9 = ARENA_CREATE DRAM_LOCAL, 256
-    r2 = ARENA_ALLOC r9, Node
-    r3 = ARENA_ALLOC r9, Node
+    s0 = ARENA_CREATE DRAM_LOCAL, 256
+    r2 = ARENA_ALLOC s0, Node
+    r3 = ARENA_ALLOC s0, Node
     r4 = 42
     r3.val = r4
     r2.next = r3
@@ -13,7 +15,7 @@ func main:
     r1 = r2
     CALL read
     PRINT r0
-    ARENA_DESTROY r9
+    ARENA_DESTROY s0
     RET r0
 
 func read(r1: ptr(Node)):

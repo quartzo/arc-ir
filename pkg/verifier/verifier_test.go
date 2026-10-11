@@ -219,11 +219,11 @@ func TestVerifyRecursion(t *testing.T) {
 
 func TestVerifyPointerParam(t *testing.T) {
 	src := "func main:\n" +
-		"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-		"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r2 = ARENA_ALLOC s0, [i64; 8]\n" +
 		"    r1 = r2\n" +
 		"    CALL read\n" +
-		"    ARENA_DESTROY r5\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET r0\n" +
 		"func read(r1: ptr([i64; 8])):\n" +
 		"    r0 = LOAD [r1]\n" +
@@ -273,11 +273,11 @@ func TestVerifyFunctionRejections(t *testing.T) {
 		{
 			"out of bounds through pointer parameter",
 			"func main:\n" +
-				"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-				"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
+				"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+				"    r2 = ARENA_ALLOC s0, [i64; 8]\n" +
 				"    r1 = r2\n" +
 				"    CALL f\n" +
-				"    ARENA_DESTROY r5\n" +
+				"    ARENA_DESTROY s0\n" +
 				"    RET r0\n" +
 				"func f(r1: ptr([i64; 2])):\n" +
 				"    r0 = LOAD [r1 + 32]\n" +
@@ -301,14 +301,15 @@ func TestVerifyFunctionRejections(t *testing.T) {
 func TestVerifyNonScalarReturns(t *testing.T) {
 	src := "func main:\n" +
 		"    CALL get_arena\n" +
-		"    r1 = r0\n" +
+		"    s0 = r0\n" +
+		"    r1 = s0\n" +
 		"    CALL make\n" +
 		"    r2 = r0\n" +
 		"    r3 = 99\n" +
 		"    STORE [r2], r3\n" +
 		"    r4 = LOAD [r2]\n" +
 		"    PRINT r4\n" +
-		"    ARENA_DESTROY r1\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET r4\n" +
 		"func get_arena() -> arena:\n" +
 		"    r0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
@@ -335,7 +336,7 @@ func TestVerifyReturnRejections(t *testing.T) {
 		},
 		{
 			"returned allocation too small",
-			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = r5\n    CALL f\n    ARENA_DESTROY r5\n    r1 = 0\n    RET r1\n" +
+			"func main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 16\n    r1 = s0\n    CALL f\n    ARENA_DESTROY s0\n    r1 = 0\n    RET r1\n" +
 				"func f(r1: arena) -> ptr([i64; 8]):\n    r0 = ARENA_ALLOC r1, [i64; 2]\n    RET r0\n",
 			"16-byte allocation",
 		},
@@ -390,19 +391,19 @@ func TestVerifyOwnership(t *testing.T) {
 		},
 		{
 			"destroy borrowed arena",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    CALL consume\n    ARENA_DESTROY r1\n    RET\n" +
+			"func main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = s0\n    CALL consume\n    ARENA_DESTROY s0\n    RET\n" +
 				"func consume(r1: arena):\n    ARENA_DESTROY r1\n    RET\n",
 			"borrowed arena",
 		},
 		{
 			"use after ownership transfer",
-			"func main:\n    r1 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r1, [i64; 8]\n    r3 = 7\n    CALL consume\n    STORE [r2], r3\n    RET\n" +
+			"func main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    s1 = ARENA_ALLOC s0, [i64; 8]\n    s2 = 7\n    r1 = s0\n    CALL consume\n    STORE [s1], s2\n    RET\n" +
 				"func consume(r1: own arena):\n    ARENA_DESTROY r1\n    RET\n",
 			"use-after-destroy",
 		},
 		{
 			"cannot transfer borrowed arena",
-			"func main:\n    r5 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = r5\n    CALL give\n    ARENA_DESTROY r5\n    RET\n" +
+			"func main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    r1 = s0\n    CALL give\n    ARENA_DESTROY s0\n    RET\n" +
 				"func give(r1: arena):\n    CALL take\n    RET\n" +
 				"func take(r1: own arena):\n    ARENA_DESTROY r1\n    RET\n",
 			"cannot transfer a borrowed arena",
@@ -500,9 +501,10 @@ func TestVerifyCapacity(t *testing.T) {
 
 	// Capacity is enforced across a function boundary via arena(<size>).
 	across := "func main:\n" +
-		"    r1 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+		"    r1 = s0\n" +
 		"    CALL fill\n" +
-		"    ARENA_DESTROY r1\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET\n" +
 		"func fill(r1: arena(64)):\n" +
 		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -542,9 +544,10 @@ func TestVerifyGrowableArena(t *testing.T) {
 
 	// A growable arena satisfies any declared parameter capacity.
 	across := "func main:\n" +
-		"    r1 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, growable(64)\n" +
+		"    r1 = s0\n" +
 		"    CALL fill\n" +
-		"    ARENA_DESTROY r1\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET\n" +
 		"func fill(r1: arena(4096)):\n" +
 		"    r2 = ARENA_ALLOC r1, [i64; 8]\n" +
@@ -742,9 +745,9 @@ func TestVerifyStruct(t *testing.T) {
 func TestVerifyPtrStruct(t *testing.T) {
 	valid := "struct Node { next: ptr([i64; 1]), val: i64 }\n" +
 		"func main:\n" +
-		"    r9 = ARENA_CREATE DRAM_LOCAL, 256\n" +
-		"    r2 = ARENA_ALLOC r9, Node\n" +
-		"    r3 = ARENA_ALLOC r9, [i64; 1]\n" +
+		"    s0 = ARENA_CREATE DRAM_LOCAL, 256\n" +
+		"    r2 = ARENA_ALLOC s0, Node\n" +
+		"    r3 = ARENA_ALLOC s0, [i64; 1]\n" +
 		"    r4 = 42\n" +
 		"    STORE [r3], r4\n" +
 		"    r2.next = r3\n" +
@@ -753,7 +756,7 @@ func TestVerifyPtrStruct(t *testing.T) {
 		"    r1 = r2\n" +
 		"    CALL read\n" +
 		"    PRINT r0\n" +
-		"    ARENA_DESTROY r9\n" +
+		"    ARENA_DESTROY s0\n" +
 		"    RET r0\n" +
 		"func read(r1: ptr(Node)):\n" +
 		"    r2 = r1.next\n" +
@@ -768,8 +771,8 @@ func TestVerifyPtrStruct(t *testing.T) {
 		src  string
 		want string
 	}{
-		{"raw ptr for struct", "struct N { a: i64 }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, [i64; 8]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
-		{"uninitialized struct", "struct N { a: i64 }\nfunc main:\n    r9 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC r9, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY r9\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
+		{"raw ptr for struct", "struct N { a: i64 }\nfunc main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC s0, [i64; 8]\n    r1 = r2\n    CALL f\n    ARENA_DESTROY s0\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "expected a N pointer"},
+		{"uninitialized struct", "struct N { a: i64 }\nfunc main:\n    s0 = ARENA_CREATE DRAM_LOCAL, 64\n    r2 = ARENA_ALLOC s0, N\n    r1 = r2\n    CALL f\n    ARENA_DESTROY s0\n    RET\nfunc f(r1: ptr(N)):\n    RET\n", "not initialized"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -808,11 +811,11 @@ func TestVerifyArray(t *testing.T) {
 			"    ARENA_DESTROY r1\n" +
 			"    RET\n"},
 		{"array parameter", "func main:\n" +
-			"    r5 = ARENA_CREATE DRAM_LOCAL, 64\n" +
-			"    r2 = ARENA_ALLOC r5, [i64; 8]\n" +
+			"    s0 = ARENA_CREATE DRAM_LOCAL, 64\n" +
+			"    r2 = ARENA_ALLOC s0, [i64; 8]\n" +
 			"    r1 = r2\n" +
 			"    CALL read\n" +
-			"    ARENA_DESTROY r5\n" +
+			"    ARENA_DESTROY s0\n" +
 			"    RET r0\n" +
 			"func read(r1: ptr([i64; 8])):\n" +
 			"    r0 = LOAD [r1]\n" +
@@ -1000,11 +1003,12 @@ func TestVerifyBlocks(t *testing.T) {
 		t.Fatalf("expected the preserved register to survive, got %v", err)
 	}
 
-	// A scratch register the callee does not write survives.
-	ok2 := "func main:\n    r5 = 42\n    CALL leaf\n    PRINT r5\n    RET\n" +
+	// A scratch register is destroyed by any call, even one that does not write
+	// it: scratch is volatile.
+	vol := "func main:\n    r5 = 42\n    CALL leaf\n    PRINT r5\n    RET\n" +
 		"func leaf:\n    r6 = 7\n    RET\n"
-	if _, err := Verify(mustParse(t, ok2)); err != nil {
-		t.Fatalf("expected an untouched scratch register to survive, got %v", err)
+	if _, err := Verify(mustParse(t, vol)); err == nil || !strings.Contains(err.Error(), "destroyed register") {
+		t.Fatalf("expected a destroyed-register error for volatile scratch, got %v", err)
 	}
 }
 

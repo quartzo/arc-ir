@@ -1,18 +1,19 @@
 ; enum.arc - a tagged union with tag refinement.
 ; A value is constructed with VARIANT; the callee refines the active variant
 ; with JV and can then read that variant's fields.
+; The arena handle survives the call, so it lives in s0.
 enum Value { Int(n: i64), Pair(a: i32, b: i32), Nil }
 
 func main:
-    r5 = ARENA_CREATE DRAM_LOCAL, 256
-    r2 = ARENA_ALLOC r5, Value
+    s0 = ARENA_CREATE DRAM_LOCAL, 256
+    r2 = ARENA_ALLOC s0, Value
     VARIANT r2, Value.Int
     r3 = 21
     r2.n = r3               ; r2 is a Value.Int holding 21
     r1 = r2
     CALL twice
     PRINT r0
-    ARENA_DESTROY r5
+    ARENA_DESTROY s0
     RET
 
 func twice(r1: ptr(Value)) -> i64:
